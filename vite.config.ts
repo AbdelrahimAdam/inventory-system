@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import legacy from "@vitejs/plugin-legacy";
 import { visualizer } from "rollup-plugin-visualizer";
 import { resolve } from "path";
-import { VitePWA } from "vite-plugin-pwa"; // ✅ NEW
+import { VitePWA } from "vite-plugin-pwa"; // ✅ PWA plugin
 
 export default defineConfig({
   plugins: [
@@ -30,7 +30,7 @@ export default defineConfig({
       gzipSize: true,
       brotliSize: true,
     }),
-    VitePWA({ // ✅ NEW
+    VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'robots.txt'],
       manifest: {
@@ -52,6 +52,10 @@ export default defineConfig({
             type: 'image/png',
           },
         ],
+      },
+      workbox: {
+        // ✅ Increased limit to 5 MB to prevent precache error
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
     }),
   ],

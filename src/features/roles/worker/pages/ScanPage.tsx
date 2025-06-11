@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import BarcodeScanner from "../components/BarcodeScanner";
-import { useInventory } from '../../context/InventoryContext';
+import { useInventory } from '../../../../context/InventoryContext';
 
 const ScanPage: React.FC = () => {
   const [scannerOpen, setScannerOpen] = useState(false);
