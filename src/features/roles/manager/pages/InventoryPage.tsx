@@ -3,7 +3,7 @@ import { Plus, Upload, Download, Moon, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import InventoryTable from "../components/InventoryTable";
 import { Button } from '../ui/Button';
-import { Input } from '../ui/input';
+import { Input } from '../ui/Input';
 import DashboardInventoryCards from '../ui/DashboardInventoryCards';
 
 const InventoryPage = () => {
