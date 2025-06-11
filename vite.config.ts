@@ -1,0 +1,126 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import legacy from "@vitejs/plugin-legacy";
+import { visualizer } from "rollup-plugin-visualizer";
+import { resolve } from "path";
+import { VitePWA } from "vite-plugin-pwa"; // ✅ NEW
+
+export default defineConfig({
+  plugins: [
+    react(),
+    legacy({
+      targets: [
+        'defaults',
+        'not IE 11',
+        'chrome >= 60',
+        'firefox >= 60', 
+        'safari >= 12',
+        'edge >= 15'
+      ],
+      modernPolyfills: [
+        'es.array.iterator',
+        'es.promise',
+        'es.object.assign'
+      ],
+      renderLegacyChunks: true,
+    }),
+    visualizer({
+      filename: "dist/bundle-report.html",
+      open: true,
+      gzipSize: true,
+      brotliSize: true,
+    }),
+    VitePWA({ // ✅ NEW
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.svg', 'robots.txt'],
+      manifest: {
+        name: 'نظام مخزون العطور',
+        short_name: 'المخزون',
+        start_url: '/',
+        display: 'standalone',
+        background_color: '#ffffff',
+        theme_color: '#1f2937',
+        icons: [
+          {
+            src: '/icon-192.png',
+            sizes: '192x192',
+            type: 'image/png',
+          },
+          {
+            src: '/icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+          },
+        ],
+      },
+    }),
+  ],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+    hmr: {
+      protocol: 'ws',
+      host: 'localhost',
+      port: 5173,
+    },
+  },
+  build: {
+    target: 'esnext',
+    chunkSizeWarningLimit: 1000,
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true,
+      },
+    },
+    rollupOptions: {
+      external: [
+        'jwt-decode',
+        'react-helmet-async'
+      ],
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("react")) return "vendor-react";
+            if (id.includes("framer-motion")) return "vendor-framer";
+            if (id.includes("react-router-dom")) return "vendor-router";
+            if (id.includes("zustand")) return "vendor-zustand";
+            if (id.includes("tailwindcss")) return "vendor-tailwind";
+            if (id.includes("jwt-decode")) return "vendor-auth"; 
+            if (id.includes("react-helmet-async")) return "vendor-helmet";
+            return "vendor";
+          }
+        },
+        chunkFileNames: "assets/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash][extname]",
+      },
+    },
+  },
+  optimizeDeps: {
+    include: [
+      'jwt-decode',
+      'react',
+      'react-dom',
+      'react-router-dom',
+      'framer-motion',
+      'react-helmet-async',
+      '@vitejs/plugin-legacy'
+    ],
+    exclude: ['js-big-decimal'],
+  },
+  resolve: {
+    alias: [
+      { find: '@', replacement: resolve(__dirname, 'src') },
+      { find: '@context', replacement: resolve(__dirname, 'src/context') },
+      { find: '@types', replacement: resolve(__dirname, 'src/types') },
+      { find: '@components', replacement: resolve(__dirname, 'src/features/components') },
+      { find: '@supplier', replacement: resolve(__dirname, 'src/features/roles/supplier/components') },
+      {
+        find: 'jwt-decode',
+        replacement: resolve(__dirname, 'node_modules/jwt-decode/build/jwt-decode.esm.js')
+      }
+    ],
+  },
+});

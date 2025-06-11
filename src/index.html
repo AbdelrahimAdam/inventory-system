@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fef9f9" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta
+      name="description"
+      content="نظام إدارة مخزون العطور - تطبيق ويب أنيق لإدارة زجاجات العطور والإكسسوارات"
+    />
+
+    <!-- ✅ Font preload -->
+    <link
+      rel="preload"
+      href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap"
+      as="style"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- ✅ Apple & PWA support -->
+    <link rel="apple-touch-icon" href="/logo192.png" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- ✅ Base styling and splash screen style -->
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: 'Tajawal', sans-serif;
+        background-color: #fef9f9;
+        color: #333;
+        direction: rtl;
+      }
+
+      #root {
+        height: 100%;
+      }
+
+      /* ✅ Splash Screen */
+      #splash-screen {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background-color: #fef9f9;
+        color: #007aff;
+        font-size: 1.5rem;
+        font-weight: 500;
+        animation: fadeIn 0.6s ease-in-out;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      /* Optional: hide scroll during load */
+      html.loading {
+        overflow: hidden;
+      }
+    </style>
+
+    <title>مخازن المعلم خليفه للعطور</title>
+  </head>
+  <body class="loading">
+    <noscript>يجب تفعيل الجافاسكريبت لتشغيل هذا التطبيق.</noscript>
+
+    <!-- ✅ Splash screen shown while app loads -->
+    <div id="splash-screen">
+      🚀 جاري التحميل...
+    </div>
+
+    <!-- ✅ React Root -->
+    <div id="root" style="display: none;"></div>
+
+    <!-- ✅ App Boot Script -->
+    <script type="module">
+      const splash = document.getElementById('splash-screen');
+      const root = document.getElementById('root');
+
+      window.addEventListener('DOMContentLoaded', () => {
+        import('/src/main.tsx').then(() => {
+          splash.style.display = 'none';
+          root.style.display = 'block';
+          document.body.classList.remove('loading');
+        });
+      });
+    </script>
+  </body>
+</html>

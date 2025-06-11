@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inventory Management System</title>
+    
+    <!-- Preload critical resources -->
+    <link rel="preload" href="/src/main.tsx" as="script">
+    <link rel="modulepreload" href="/src/main.tsx">
+    
+    <!-- Legacy polyfills -->
+    <script>
+      // Feature detection for legacy browsers
+      var needsPolyfill = !window.Promise || !window.fetch || !window.Symbol;
+      if (needsPolyfill) {
+        document.write('<script src="https://cdn.jsdelivr.net/npm/core-js-bundle@3.25.5/minified.js"><\/script>');
+        document.write('<script src="https://cdn.jsdelivr.net/npm/regenerator-runtime@0.13.11/runtime.js"><\/script>');
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    
+    <!-- Modern browsers will load this -->
+    <script type="module" src="/src/main.tsx"></script>
+    
+    <!-- Legacy browsers will load this -->
+    <script nomodule>
+      if (!('noModule' in HTMLScriptElement.prototype)) {
+        System.import('/src/legacy-entry.js');
+      }
+    </script>
+  </body>
+</html>

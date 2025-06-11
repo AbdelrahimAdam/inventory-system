@@ -1,13 +1,130 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* ✅ Load Tajawal font from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ✅ Local Amiri fonts for Arabic fallback */
+@font-face {
+  font-family: 'Amiri';
+  src: url('/fonts/Amiri-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Amiri';
+  src: url('/fonts/Amiri-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Amiri';
+  src: url('/fonts/Amiri-Slanted.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+}
+@font-face {
+  font-family: 'Amiri';
+  src: url('/fonts/Amiri-BoldSlanted.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+/* ✅ Base styles */
+body {
+  font-family: 'Tajawal', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: #f9f9f9; /* apple.bg */
+  color: #1f1f1f; /* apple.text.primary */
+  line-height: 1.75rem;
+  font-size: 1rem;
+  transition: background-color 0.3s, color 0.3s;
+  padding: 0 1rem; /* ✅ Add mobile-safe horizontal padding */
+}
+
+/* ✅ Responsive typography */
+h1 {
+  font-size: 1.75rem; /* 28px */
+}
+h2 {
+  font-size: 1.5rem;
+}
+h3 {
+  font-size: 1.25rem;
+}
+h4, h5, h6 {
+  font-size: 1.125rem;
+}
+
+@media (min-width: 640px) {
+  h1 {
+    font-size: 2rem;
+  }
+  h2 {
+    font-size: 1.75rem;
+  }
+  h3 {
+    font-size: 1.5rem;
+  }
+}
+
+/* ✅ Arabic fallback */
+:lang(ar),
+html[dir="rtl"] body {
+  font-family: 'Tajawal', 'Amiri', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ✅ Dark mode */
+html.dark body {
+  background-color: #111827;
+  color: #f9f9f9;
+}
+
+/* ✅ RTL */
+html[dir="rtl"] {
+  direction: rtl;
+}
+
+/* ✅ Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 700;
+  color: #1f2937;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+}
+html.dark h1, html.dark h2, html.dark h3, html.dark h4, html.dark h5, html.dark h6 {
+  color: #ffffff;
+}
+
+/* ✅ Paragraphs */
+p {
+  font-size: 1rem;
+  color: #374151;
+  line-height: 1.75rem;
+}
+html.dark p {
+  color: #d1d5db;
+}
+
+/* ✅ Links */
+a {
+  color: #007aff;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* ✅ Forms */
+input,
+textarea,
+select {
+  @apply w-full border border-apple-border rounded-lg px-4 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-apple-accent-blue;
+  font-size: 1rem;
+}
+
+/* ✅ Transitions */
+* {
+  transition: all 0.2s ease-in-out;
 }
