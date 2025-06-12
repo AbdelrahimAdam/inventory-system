@@ -6,6 +6,7 @@ import { resolve } from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  base: './', // ✅ Ensures assets load correctly in Vercel and other static hosts
   plugins: [
     react(),
     legacy({

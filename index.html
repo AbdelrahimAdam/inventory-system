@@ -30,7 +30,7 @@
       }
     </style>
 
-    <!-- Legacy browser polyfills (for older Safari, IE11) -->
+    <!-- Polyfills for older browsers -->
     <script>
       if (!window.Promise || !window.fetch || !window.Symbol) {
         document.write('<script src="https://cdn.jsdelivr.net/npm/core-js-bundle@3.25.5/minified.js"><\/script>');
@@ -44,12 +44,5 @@
 
     <!-- Main entry for modern browsers -->
     <script type="module" src="/src/main.tsx"></script>
-
-    <!-- Optional: legacy fallback -->
-    <script nomodule>
-      const script = document.createElement('script');
-      script.src = '/legacy-entry.js';
-      document.body.appendChild(script);
-    </script>
   </body>
 </html>
