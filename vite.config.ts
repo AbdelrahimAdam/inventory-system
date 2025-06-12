@@ -1,25 +1,28 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import legacy from '@vitejs/plugin-legacy';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { resolve } from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: './', // ✅ Ensures assets load correctly in Vercel and other static hosts
+  base: '/', // ✅ Adjusted for better compatibility with Vercel/static hosts
   plugins: [
     react(),
-    legacy({
-      targets: ['defaults', 'not IE 11'],
-      modernPolyfills: true,
-      renderLegacyChunks: true,
-    }),
+
+    // 🔧 Temporarily disabled legacy plugin to fix module/MIME issues
+    // legacy({
+    //   targets: ['defaults', 'not IE 11'],
+    //   modernPolyfills: true,
+    //   renderLegacyChunks: true,
+    // }),
+
     visualizer({
       filename: 'dist/bundle-report.html',
       open: false,
       gzipSize: true,
       brotliSize: true,
     }),
+
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: [
@@ -63,10 +66,9 @@ export default defineConfig({
       { find: '@types', replacement: resolve(__dirname, 'src/types') },
       { find: '@components', replacement: resolve(__dirname, 'src/features/components') },
       { find: '@supplier', replacement: resolve(__dirname, 'src/features/roles/supplier/components') },
-      {
-        find: 'jwt-decode',
-        replacement: resolve(__dirname, 'node_modules/jwt-decode/build/jwt-decode.esm.js'),
-      },
+
+      // ⚠️ Removed aliasing directly into node_modules to avoid corrupted builds
+      // { find: 'jwt-decode', replacement: resolve(__dirname, 'node_modules/jwt-decode/build/jwt-decode.esm.js') },
     ],
   },
   server: {
