@@ -5,16 +5,11 @@ import { resolve } from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: '/', // ✅ Adjusted for better compatibility with Vercel/static hosts
+  base: '/', // ✅ Works with Vercel/static hosting
   plugins: [
     react(),
 
-    // 🔧 Temporarily disabled legacy plugin to fix module/MIME issues
-    // legacy({
-    //   targets: ['defaults', 'not IE 11'],
-    //   modernPolyfills: true,
-    //   renderLegacyChunks: true,
-    // }),
+    // ✅ Removed legacy plugin to fix React 18 `useSyncExternalStore` issues
 
     visualizer({
       filename: 'dist/bundle-report.html',
@@ -55,7 +50,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB
       },
     }),
   ],
@@ -66,9 +61,7 @@ export default defineConfig({
       { find: '@types', replacement: resolve(__dirname, 'src/types') },
       { find: '@components', replacement: resolve(__dirname, 'src/features/components') },
       { find: '@supplier', replacement: resolve(__dirname, 'src/features/roles/supplier/components') },
-
-      // ⚠️ Removed aliasing directly into node_modules to avoid corrupted builds
-      // { find: 'jwt-decode', replacement: resolve(__dirname, 'node_modules/jwt-decode/build/jwt-decode.esm.js') },
+      // ⛔ Removed node_modules aliasing for safety
     ],
   },
   server: {
