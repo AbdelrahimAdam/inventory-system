@@ -17,13 +17,12 @@ interface AuthContextType {
   loading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
+  logout: (redirect?: boolean) => Promise<void>;
   validateSession: () => boolean;
   updateUserSettings: (newSettings: Record<string, any>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
 const SESSION_TIMEOUT_MINUTES = 60;
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -32,12 +31,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
+  // Load session on app start
   useEffect(() => {
     const storedToken = localStorage.getItem("token");
+    const storedUser = localStorage.getItem("user");
     const expiresAt = parseInt(localStorage.getItem("sessionExpiresAt") || "0", 10);
 
     if (!storedToken || !expiresAt || Date.now() > expiresAt) {
-      logout(false); // Soft logout: don't navigate
+      logout(false); // soft logout
       setLoading(false);
       return;
     }
@@ -46,29 +47,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const decoded = JSON.parse(atob(storedToken));
       if (!decoded.sub || !decoded.role || !decoded.email) throw new Error("Invalid token");
 
-      const users = getUsers();
-      const matchedUser = users.find((u) => u.id === decoded.sub);
+      let matchedUser: User | null = null;
+
+      if (storedUser) {
+        matchedUser = JSON.parse(storedUser);
+      } else {
+        const users = getUsers();
+        matchedUser = users.find((u) => u.id === decoded.sub) || null;
+      }
 
       if (!matchedUser) throw new Error("User not found");
 
       setUser(matchedUser);
       setToken(storedToken);
     } catch {
-      logout(false); // Soft logout
+      logout(false);
     }
 
     setLoading(false);
   }, []);
 
+  // Auto logout on expiration
   useEffect(() => {
     const interval = setInterval(() => {
       const expiresAt = parseInt(localStorage.getItem("sessionExpiresAt") || "0", 10);
       if (expiresAt && Date.now() >= expiresAt) {
-        logout(); // Force logout if session expired
+        logout(); // force logout
       }
-    }, 60 * 1000); // every minute
-
+    }, 60 * 1000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Also check on tab focus
+  useEffect(() => {
+    const handleFocus = () => {
+      const expiresAt = parseInt(localStorage.getItem("sessionExpiresAt") || "0", 10);
+      if (expiresAt && Date.now() >= expiresAt) logout();
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
   const login = async (email: string, password: string) => {
@@ -102,14 +119,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     localStorage.setItem("token", mockToken);
     localStorage.setItem("sessionExpiresAt", expiresAt.toString());
+    localStorage.setItem("user", JSON.stringify(userData));
 
     setToken(mockToken);
     setUser(userData);
+
+    // Redirect to role-based dashboard
+    switch (userData.role) {
+      case "admin":
+        navigate("/admin");
+        break;
+      case "teacher":
+        navigate("/teacher");
+        break;
+      case "student":
+        navigate("/student");
+        break;
+      case "parent":
+        navigate("/parent");
+        break;
+      default:
+        navigate("/");
+    }
   };
 
   const logout = async (redirect: boolean = true) => {
     localStorage.removeItem("token");
     localStorage.removeItem("sessionExpiresAt");
+    localStorage.removeItem("user");
     setToken(null);
     setUser(null);
 
@@ -138,6 +175,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const users = getUsers();
     const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
     saveUsers(updatedUsers);
+
+    localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
   return (

@@ -5,8 +5,7 @@ import { motion } from "framer-motion";
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, user } = useAuth(); // Make sure the `user` is available after login
-
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -17,26 +16,26 @@ const LoginPage: React.FC = () => {
     setError("");
     try {
       await login(email, password);
-      if (user) {
-        switch (user.role) {
-          case "manager":
-            navigate("/manager");
-            break;
-          case "supplier":
-            navigate("/supplier");
-            break;
-          case "worker":
-            navigate("/worker");
-            break;
-          case "buyer":
-            navigate("/buyer");
-            break;
-          default:
-            navigate("/unauthorized");
-            break;
-        }
+
+      // Wait a tick to let context update
+      const role = JSON.parse(atob(localStorage.getItem("token") || ""))?.role;
+      switch (role) {
+        case "manager":
+          navigate("/manager");
+          break;
+        case "supplier":
+          navigate("/supplier");
+          break;
+        case "worker":
+          navigate("/worker");
+          break;
+        case "buyer":
+          navigate("/buyer");
+          break;
+        default:
+          navigate("/unauthorized");
       }
-    } catch (err) {
+    } catch {
       setError("بيانات الدخول غير صحيحة");
     }
   };
@@ -53,7 +52,6 @@ const LoginPage: React.FC = () => {
       />
 
       <div className="w-full max-w-md bg-white dark:bg-gray-900 rounded-xl shadow-2xl p-8 z-10">
-        {/* ✅ Logo section */}
         <div className="flex justify-center mb-6">
           <img
             src="/logo.png"
