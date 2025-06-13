@@ -4,36 +4,6 @@ import { visualizer } from 'rollup-plugin-visualizer';
 import { resolve } from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
 
-// Enhanced MIME type plugin with proper module type handling
-function mimePlugin() {
-  return {
-    name: 'mime-fix',
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        if (req.url?.endsWith('.js')) {
-          res.setHeader('Content-Type', 'application/javascript');
-        } else if (req.url?.endsWith('.css')) {
-          res.setHeader('Content-Type', 'text/css');
-        } else if (req.url?.endsWith('.wasm')) {
-          res.setHeader('Content-Type', 'application/wasm');
-        }
-        next();
-      });
-    },
-    transformIndexHtml(html) {
-      return html
-        .replace(
-          /<script type="module" src="(.*?)"><\/script>/g,
-          '<script type="module" src="$1" crossorigin="anonymous"></script>'
-        )
-        .replace(
-          /<link rel="stylesheet" href="(.*?)">/g,
-          '<link rel="stylesheet" href="$1" crossorigin="anonymous">'
-        );
-    }
-  };
-}
-
 export default defineConfig({
   base: '/',
   plugins: [
@@ -44,7 +14,6 @@ export default defineConfig({
         plugins: ['@emotion/babel-plugin']
       }
     }),
-    mimePlugin(),
     visualizer({
       filename: 'dist/bundle-report.html',
       open: process.env.NODE_ENV === 'development',
@@ -80,7 +49,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
-        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024, // 8MB
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
           {
             urlPattern: /\.(?:js|css|html|json)$/,
@@ -89,7 +58,7 @@ export default defineConfig({
               cacheName: 'static-assets',
               expiration: {
                 maxEntries: 200,
-                maxAgeSeconds: 60 * 60 * 24 * 30 // 30 days
+                maxAgeSeconds: 60 * 60 * 24 * 30
               }
             }
           },
@@ -100,22 +69,7 @@ export default defineConfig({
               cacheName: 'image-assets',
               expiration: {
                 maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 * 60 // 60 days
-              }
-            }
-          },
-          {
-            urlPattern: /api/,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              networkTimeoutSeconds: 10,
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 60 * 24 // 1 day
-              },
-              matchOptions: {
-                ignoreSearch: true
+                maxAgeSeconds: 60 * 60 * 24 * 60
               }
             }
           }
@@ -127,15 +81,38 @@ export default defineConfig({
         navigateFallback: 'index.html'
       }
     }),
+    // Jotai resolver plugin
+    {
+      name: 'jotai-resolver',
+      resolveId(source) {
+        if (source === 'jotai/vanilla.js') {
+          return { id: '\0jotai-stub', external: false };
+        }
+      },
+      load(id) {
+        if (id === '\0jotai-stub') {
+          return 'export default {}';
+        }
+      }
+    }
   ],
   resolve: {
     alias: [
+      { 
+        find: '@context/AuthContext',
+        replacement: resolve(__dirname, 'src/context/AuthContext.tsx')
+      },
+      { 
+        find: 'axios',
+        replacement: resolve(__dirname, 'node_modules/axios/index.js')
+      },
       { find: '@', replacement: resolve(__dirname, 'src') },
-      { find: '@context', replacement: resolve(__dirname, 'src/context') },
       { find: '@types', replacement: resolve(__dirname, 'src/types') },
       { find: '@components', replacement: resolve(__dirname, 'src/features/components') },
       { find: '@supplier', replacement: resolve(__dirname, 'src/features/roles/supplier/components') },
     ],
+    extensions: ['.tsx', '.ts', '.jsx', '.js', '.json'],
+    mainFields: ['browser', 'module', 'main']
   },
   server: {
     host: '0.0.0.0',
@@ -144,10 +121,6 @@ export default defineConfig({
     hmr: {
       protocol: 'ws',
       host: 'localhost',
-    },
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp'
     }
   },
   build: {
@@ -156,64 +129,55 @@ export default defineConfig({
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: true,
+        drop_console: process.env.NODE_ENV === 'production',
         drop_debugger: true,
-        pure_funcs: ['console.log', 'console.debug']
       },
       format: {
         comments: false
       }
     },
     rollupOptions: {
+      onwarn(warning, warn) {
+        if (warning.code === 'PURE_COMMENT' || warning.code === 'CIRCULAR_DEPENDENCY') return;
+        warn(warning);
+      },
       output: {
-        manualChunks(id) {
-          if (id.includes('node_modules')) {
-            if (id.includes('react') || id.includes('react-dom')) return 'vendor-react';
-            if (id.includes('@mui') || id.includes('@emotion')) return 'vendor-mui';
-            if (id.includes('react-router-dom')) return 'vendor-router';
-            if (id.includes('framer-motion')) return 'vendor-animations';
-            if (id.includes('zustand') || id.includes('jotai')) return 'vendor-state';
-            if (id.includes('axios') || id.includes('jwt-decode')) return 'vendor-network';
-            if (id.includes('date-fns') || id.includes('moment')) return 'vendor-dates';
-            return 'vendor-other';
-          }
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          emotion: ['@emotion/react', '@emotion/styled'],
+          router: ['react-router-dom'],
+          state: ['zustand'],
+          http: ['axios'],
+          ui: ['react-helmet-async']
         },
         chunkFileNames: 'assets/js/[name]-[hash].js',
         entryFileNames: 'assets/js/[name]-[hash].js',
         assetFileNames: 'assets/[ext]/[name]-[hash].[ext]',
-        generatedCode: 'es2015',
-        hoistTransitiveImports: false
-      },
-      treeshake: {
-        preset: 'recommended',
-        moduleSideEffects: false
       }
     },
     sourcemap: process.env.NODE_ENV !== 'production',
+    commonjsOptions: {
+      transformMixedEsModules: true
+    }
   },
   optimizeDeps: {
     include: [
       'react',
       'react-dom',
-      'react-router-dom',
       '@emotion/react',
       '@emotion/styled',
-      'framer-motion',
-      'jwt-decode',
-      'zustand'
+      'react-router-dom',
+      'react-helmet-async',
+      'zustand',
+      'axios'
     ],
-    exclude: ['js-big-decimal'],
+    exclude: ['use-sync-external-store', 'jotai'],
     esbuildOptions: {
       target: 'esnext',
+      legalComments: 'none',
       supported: {
         'top-level-await': true
       }
     }
-  },
-  esbuild: {
-    legalComments: 'none',
-    minifyIdentifiers: true,
-    minifySyntax: true,
-    minifyWhitespace: true
   }
 });
