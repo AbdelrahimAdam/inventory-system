@@ -14,8 +14,9 @@ interface Item {
   individual: number;
   remaining: number;
 }
+
 export default function ExternalDispatchPage() {
-  const navigate = useNavigate(); // just get the navigate function
+  const navigate = useNavigate();
   const [items, setItems] = useState<Item[]>([]);
   const [filteredItems, setFilteredItems] = useState<Item[]>([]);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
@@ -49,7 +50,7 @@ export default function ExternalDispatchPage() {
         const data = await response.json();
         if (data.length === 0) {
           alert('لا توجد أصناف متاحة في المخزون.');
-          navigate('/main-inventory'); // navigate safely here
+          navigate('/main-inventory');
           return;
         }
         setItems(data);
@@ -63,8 +64,6 @@ export default function ExternalDispatchPage() {
       alert(`فشل في تحميل الأصناف: ${errorMessage}`);
     }
   };
-}
-
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -162,7 +161,7 @@ export default function ExternalDispatchPage() {
                 توقيت القاهرة: {currentTime}
               </span>
               <button
-                onClick={() => router.push('/main-inventory')}
+                onClick={() => navigate('/main-inventory')}
                 className="flex items-center justify-center px-4 py-2 bg-red-600 text-white rounded-xl shadow-sm hover:bg-red-700 text-sm sm:text-base"
               >
                 <FiX className="w-5 h-5 ml-2" />
@@ -282,25 +281,7 @@ export default function ExternalDispatchPage() {
                   value={field.value}
                   onChange={(e) => field.onChange(e.target.value)}
                   placeholder={field.placeholder}
-                  className="p-2 text-right text-sm bg-white/50 dark:bg-gray-800/50 rounded-lg w-full"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === 'ArrowDown') {
-                      e.preventDefault();
-                      const nextIndex = index + 1;
-                      if (nextIndex < 5) {
-                        document.querySelectorAll('.dispatch-input')[nextIndex]?.focus();
-                      } else {
-                        saveDispatch();
-                      }
-                    } else if (e.key === 'ArrowUp') {
-                      e.preventDefault();
-                      const prevIndex = index - 1;
-                      if (prevIndex >= 0) {
-                        document.querySelectorAll('.dispatch-input')[prevIndex]?.focus();
-                      }
-                    }
-                  }}
-                  className="dispatch-input"
+                  className="p-2 text-right text-sm bg-white/50 dark:bg-gray-800/50 rounded-lg w-full dispatch-input"
                 />
                 <label className="text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap">
                   {field.label}
