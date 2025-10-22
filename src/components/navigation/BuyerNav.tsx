@@ -1,12 +1,15 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import {
+  LayoutDashboard,
   ShoppingCart,
-  Boxes,
-  Truck,
+  Users,
   BarChart2,
   Settings,
-  History
+  ScrollText,
+  Briefcase,
+  Truck,
+  DollarSign,
 } from 'lucide-react';
 
 interface Props {
@@ -16,12 +19,15 @@ interface Props {
 
 const BuyerNav: React.FC<Props> = ({ collapsed, onLinkClick }) => {
   const navItems = [
-    { path: '/buyer/dashboard', icon: <ShoppingCart />, label: 'لوحة القيادة' },
-    { path: '/buyer/orders', icon: <Boxes />, label: 'الطلبات' },
-    { path: '/buyer/suppliers', icon: <Truck />, label: 'الموردون' },
+    { path: '/buyer/dashboard', icon: <LayoutDashboard />, label: 'لوحة التحكم' },
+    { path: '/buyer/orders', icon: <ShoppingCart />, label: 'الطلبات' },
+    { path: '/buyer/suppliers', icon: <Users />, label: 'الموردون' },
     { path: '/buyer/reports', icon: <BarChart2 />, label: 'التقارير' },
+    { path: '/buyer/purchase-invoices', icon: <ScrollText />, label: 'فواتير الشراء' },
+    { path: '/buyer/supplier-management', icon: <Briefcase />, label: 'إدارة الموردين' },
+    { path: '/buyer/procurement', icon: <Truck />, label: 'عمليات التوريد' },
+    { path: '/buyer/budget', icon: <DollarSign />, label: 'إدارة الميزانية' },
     { path: '/buyer/settings', icon: <Settings />, label: 'الإعدادات' },
-    { path: '/buyer/history', icon: <History />, label: 'المحفوظات' },
   ];
 
   return (

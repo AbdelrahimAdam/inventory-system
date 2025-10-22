@@ -1,0 +1,34 @@
+// types/backup.ts
+export interface BackupFile {
+  id: string;
+  filename: string;
+  size: string;
+  createdAt: string;
+  type: 'full' | 'partial';
+  database: 'perfume_inventory';
+  status: 'completed' | 'failed' | 'in_progress';
+}
+
+export interface BackupStats {
+  totalBackups: number;
+  lastBackup: string;
+  totalSize: string;
+  successRate: number;
+}
+
+export interface BackupConfig {
+  type: 'full' | 'incremental';
+  includeData: boolean;
+  includeSchema: boolean;
+  includeUsers: boolean;
+  database: string;
+}
+
+export interface RestoreConfig {
+  backupId: string;
+  database: string;
+  options: {
+    preserveUsers?: boolean;
+    skipForeignKeys?: boolean;
+  };
+}

@@ -1,30 +1,24 @@
-import React from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import LoadingSpinner from '../components/LoadingSpinner';
-import { ROLES } from '../utils/roles';
+this is the protected routes update it to be the default is login page : import React from "react";
+import { Navigate, useLocation } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import LoadingSpinner from "../components/LoadingSpinner";
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  allowedRoles?: Role[];
+  allowedRoles?: string[];
 }
 
-const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ 
-  children, 
-  allowedRoles = Object.values(ROLES) 
-}) => {
+const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowedRoles }) => {
+  const { user, initialized, loading, isAuthenticated } = useAuth();
   const location = useLocation();
-  const { user, loading } = useAuth();
 
-  if (loading) {
-    return <LoadingSpinner fullScreen />;
-  }
+  if (!initialized || loading) return <LoadingSpinner fullScreen />;
 
-  if (!user) {
+  if (!isAuthenticated || !user) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (!allowedRoles.includes(user.role)) {
+  if (allowedRoles && !allowedRoles.includes(user.role_name)) {
     return <Navigate to="/unauthorized" replace />;
   }
 

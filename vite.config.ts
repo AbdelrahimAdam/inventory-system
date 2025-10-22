@@ -5,6 +5,7 @@ import { resolve } from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  appType: 'spa', // 👈 Ensures all routes fallback to index.html
   base: '/',
   plugins: [
     react({
@@ -35,16 +36,8 @@ export default defineConfig({
         background_color: '#ffffff',
         theme_color: '#1f2937',
         icons: [
-          {
-            src: '/icon-192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: '/icon-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
         ],
       },
       workbox: {
@@ -56,10 +49,7 @@ export default defineConfig({
             handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'static-assets',
-              expiration: {
-                maxEntries: 200,
-                maxAgeSeconds: 60 * 60 * 24 * 30
-              }
+              expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 30 }
             }
           },
           {
@@ -67,10 +57,7 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: {
               cacheName: 'image-assets',
-              expiration: {
-                maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 * 60
-              }
+              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 60 }
             }
           }
         ]
@@ -81,7 +68,6 @@ export default defineConfig({
         navigateFallback: 'index.html'
       }
     }),
-    // Jotai resolver plugin
     {
       name: 'jotai-resolver',
       resolveId(source) {
@@ -98,14 +84,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: [
-      { 
-        find: '@context/AuthContext',
-        replacement: resolve(__dirname, 'src/context/AuthContext.tsx')
-      },
-      { 
-        find: 'axios',
-        replacement: resolve(__dirname, 'node_modules/axios/index.js')
-      },
+      { find: '@context/AuthContext', replacement: resolve(__dirname, 'src/context/AuthContext.tsx') },
+      { find: 'axios', replacement: resolve(__dirname, 'node_modules/axios/index.js') },
       { find: '@', replacement: resolve(__dirname, 'src') },
       { find: '@types', replacement: resolve(__dirname, 'src/types') },
       { find: '@components', replacement: resolve(__dirname, 'src/features/components') },
@@ -118,10 +98,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
-    hmr: {
-      protocol: 'ws',
-      host: 'localhost',
-    }
+    hmr: { protocol: 'ws', host: 'localhost' },
   },
   build: {
     target: 'esnext',
@@ -132,9 +109,7 @@ export default defineConfig({
         drop_console: process.env.NODE_ENV === 'production',
         drop_debugger: true,
       },
-      format: {
-        comments: false
-      }
+      format: { comments: false }
     },
     rollupOptions: {
       onwarn(warning, warn) {
@@ -156,11 +131,9 @@ export default defineConfig({
       }
     },
     sourcemap: process.env.NODE_ENV !== 'production',
-    commonjsOptions: {
-      transformMixedEsModules: true
-    }
+    commonjsOptions: { transformMixedEsModules: true }
   },
-  optimizeDeps: {
+    optimizeDeps: {
     include: [
       'react',
       'react-dom',
@@ -169,15 +142,14 @@ export default defineConfig({
       'react-router-dom',
       'react-helmet-async',
       'zustand',
-      'axios'
+      'axios',
+      'use-sync-external-store'
     ],
-    exclude: ['use-sync-external-store', 'jotai'],
+    exclude: ['jotai'],
     esbuildOptions: {
       target: 'esnext',
       legalComments: 'none',
-      supported: {
-        'top-level-await': true
-      }
+      supported: { 'top-level-await': true }
     }
   }
-});
+}); 

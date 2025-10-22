@@ -6,6 +6,10 @@ import {
   ScanLine,
   BarChart2,
   Settings,
+  Factory,
+  ShieldCheck,
+  Activity,
+  Wrench,
 } from 'lucide-react';
 import { useFeatureFlag } from '../../utils/features';
 import { motion } from 'framer-motion';
@@ -20,7 +24,7 @@ const WorkerNav: React.FC<Props> = ({ collapsed, onLinkClick }) => {
     {
       path: '/worker/dashboard',
       icon: <LayoutDashboard className="w-5 h-5" />,
-      label: 'لوحة القيادة',
+      label: 'لوحة التحكم',
     },
     {
       path: '/worker/tasks',
@@ -32,6 +36,26 @@ const WorkerNav: React.FC<Props> = ({ collapsed, onLinkClick }) => {
       icon: <ScanLine className="w-5 h-5" />,
       label: 'المسح',
       feature: 'barcode-scanning',
+    },
+    {
+      path: '/worker/factory-operations',
+      icon: <Factory className="w-5 h-5" />,
+      label: 'عمليات المصنع',
+    },
+    {
+      path: '/worker/quality-control',
+      icon: <ShieldCheck className="w-5 h-5" />,
+      label: 'مراقبة الجودة',
+    },
+    {
+      path: '/worker/production-tracking',
+      icon: <Activity className="w-5 h-5" />,
+      label: 'تتبع الإنتاج',
+    },
+    {
+      path: '/worker/maintenance',
+      icon: <Wrench className="w-5 h-5" />,
+      label: 'الصيانة',
     },
     {
       path: '/worker/reports',

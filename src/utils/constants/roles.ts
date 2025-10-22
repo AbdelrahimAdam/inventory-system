@@ -1,6 +1,7 @@
 // src/utils/constants/roles.ts
 
 export const ROLES = {
+  SUPER_ADMIN: 'super_admin',
   MANAGER: 'manager',
   WORKER: 'worker',
   BUYER: 'buyer',
@@ -17,6 +18,12 @@ export interface RoleConfig {
 }
 
 export const ROLE_CONFIG: Record<Role, RoleConfig> = {
+  [ROLES.SUPER_ADMIN]: {
+    title: 'Super Admin',
+    titleAr: 'لوحة الإدارة العامة',
+    color: 'bg-red-500',
+    icon: '👑',
+  },
   [ROLES.MANAGER]: {
     title: 'Manager',
     titleAr: 'لوحة المدير',

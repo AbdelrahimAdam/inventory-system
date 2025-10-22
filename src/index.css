@@ -1,5 +1,5 @@
-/* ✅ Load Tajawal font from Google Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
+/* ✅ Load Tajawal and Amiri fonts from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&family=Amiri:wght@400;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -11,120 +11,162 @@
   src: url('/fonts/Amiri-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
+  font-display: swap;
 }
 @font-face {
   font-family: 'Amiri';
   src: url('/fonts/Amiri-Bold.ttf') format('truetype');
   font-weight: 700;
   font-style: normal;
+  font-display: swap;
 }
 @font-face {
   font-family: 'Amiri';
   src: url('/fonts/Amiri-Slanted.ttf') format('truetype');
   font-weight: 400;
   font-style: italic;
+  font-display: swap;
 }
 @font-face {
   font-family: 'Amiri';
   src: url('/fonts/Amiri-BoldSlanted.ttf') format('truetype');
   font-weight: 700;
   font-style: italic;
+  font-display: swap;
 }
 
 /* ✅ Base styles */
-body {
-  font-family: 'Tajawal', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  background-color: #f9f9f9; /* apple.bg */
-  color: #1f1f1f; /* apple.text.primary */
-  line-height: 1.75rem;
-  font-size: 1rem;
-  transition: background-color 0.3s, color 0.3s;
-  padding: 0 1rem; /* ✅ Add mobile-safe horizontal padding */
-}
+@layer base {
+  body {
+    font-family: 'Tajawal', 'Amiri', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #f9f9f9; /* apple.bg */
+    color: #1f1f1f; /* apple.text.primary */
+    line-height: 1.75;
+    font-size: 1rem;
+    transition: background-color 0.3s ease, color 0.3s ease;
+    padding: 0 1rem; /* Mobile-safe horizontal padding */
+    margin: 0;
+    box-sizing: border-box;
+  }
 
-/* ✅ Responsive typography */
-h1 {
-  font-size: 1.75rem; /* 28px */
-}
-h2 {
-  font-size: 1.5rem;
-}
-h3 {
-  font-size: 1.25rem;
-}
-h4, h5, h6 {
-  font-size: 1.125rem;
-}
-
-@media (min-width: 640px) {
+  /* ✅ Responsive typography */
   h1 {
-    font-size: 2rem;
+    font-size: 1.75rem; /* 28px */
   }
   h2 {
-    font-size: 1.75rem;
-  }
-  h3 {
     font-size: 1.5rem;
   }
+  h3 {
+    font-size: 1.25rem;
+  }
+  h4, h5, h6 {
+    font-size: 1.125rem;
+  }
+
+  @media (min-width: 640px) {
+    h1 {
+      font-size: 2rem;
+    }
+    h2 {
+      font-size: 1.75rem;
+    }
+    h3 {
+      font-size: 1.5rem;
+    }
+  }
+
+  /* ✅ Arabic and RTL support */
+  :lang(ar),
+  html[dir="rtl"] body {
+    font-family: 'Tajawal', 'Amiri', ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /* ✅ Dark mode */
+  html.dark body {
+    background-color: #111827; /* Tailwind gray-900 */
+    color: #f9f9f9; /* Tailwind gray-50 */
+  }
+
+  /* ✅ RTL */
+  html[dir="rtl"] {
+    direction: rtl;
+  }
+
+  /* ✅ Headings */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Tajawal', 'Amiri', sans-serif;
+    font-weight: 700;
+    color: #1f2937; /* Tailwind gray-800 */
+    letter-spacing: -0.025em;
+    line-height: 1.25;
+  }
+  html.dark h1, html.dark h2, html.dark h3, html.dark h4, html.dark h5, html.dark h6 {
+    color: #ffffff;
+  }
+
+  /* ✅ Paragraphs */
+  p {
+    font-size: 1rem;
+    color: #374151; /* Tailwind gray-700 */
+    line-height: 1.75;
+  }
+  html.dark p {
+    color: #d1d5db; /* Tailwind gray-300 */
+  }
+
+  /* ✅ Links */
+  a {
+    color: #007aff; /* Apple blue */
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+
+  /* ✅ Forms */
+  input,
+  textarea,
+  select {
+    @apply w-full border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 bg-white dark:bg-gray-800 text-gray-900 dark:text-white;
+    font-family: 'Tajawal', 'Amiri', sans-serif;
+    font-size: 1rem;
+  }
 }
 
-/* ✅ Arabic fallback */
-:lang(ar),
-html[dir="rtl"] body {
-  font-family: 'Tajawal', 'Amiri', ui-sans-serif, system-ui, sans-serif;
+/* ✅ Custom components */
+@layer components {
+  /* Loading spinner */
+  .animate-spin {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  /* Buttons */
+  button {
+    @apply transition-colors duration-200;
+  }
 }
 
-/* ✅ Dark mode */
-html.dark body {
-  background-color: #111827;
-  color: #f9f9f9;
+/* ✅ Remove global transition for better specificity */
+*:not(button, a, input, textarea, select) {
+  transition: none;
 }
 
-/* ✅ RTL */
-html[dir="rtl"] {
-  direction: rtl;
+/* ✅ Accessibility: Focus states */
+:focus-visible {
+  outline: 2px solid #007aff;
+  outline-offset: 2px;
 }
 
-/* ✅ Headings */
-h1, h2, h3, h4, h5, h6 {
-  font-weight: 700;
-  color: #1f2937;
-  letter-spacing: -0.025em;
-  line-height: 1.25;
+/* ✅ Prevent text selection on double-click for better UX */
+body {
+  user-select: none;
 }
-html.dark h1, html.dark h2, html.dark h3, html.dark h4, html.dark h5, html.dark h6 {
-  color: #ffffff;
-}
-
-/* ✅ Paragraphs */
-p {
-  font-size: 1rem;
-  color: #374151;
-  line-height: 1.75rem;
-}
-html.dark p {
-  color: #d1d5db;
-}
-
-/* ✅ Links */
-a {
-  color: #007aff;
-  text-decoration: none;
-  transition: color 0.2s;
-}
-a:hover {
-  text-decoration: underline;
-}
-
-/* ✅ Forms */
-input,
-textarea,
-select {
-  @apply w-full border border-apple-border rounded-lg px-4 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-apple-accent-blue;
-  font-size: 1rem;
-}
-
-/* ✅ Transitions */
-* {
-  transition: all 0.2s ease-in-out;
+body *:not(input, textarea, select) {
+  user-select: text;
 }

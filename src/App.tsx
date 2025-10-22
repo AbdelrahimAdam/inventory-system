@@ -1,39 +1,86 @@
-// App.tsx
+// src/App.tsx
 import React, { Suspense, lazy, useEffect, useState } from "react";
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, Outlet } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { HelmetProvider } from "react-helmet-async";
 
 import ErrorBoundary from "./components/ErrorBoundary";
 import LoadingSpinner from "./components/LoadingSpinner";
-import RequireRole from "./components/RequireRole";
 import OfflineBanner from "./components/OfflineBanner";
-import { ROLES } from "./utils/constants";
-import { AuthProvider } from "./context/AuthContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import RoleBasedDashboardRedirect from "./components/RoleBasedDashboardRedirect";
+import UnifiedLayout from "./layouts/UnifiedLayout";
+import { ThemeProvider } from "./context/ThemeContext";
+
+// === Schema-compatible role constants ===
+const ROLES = {
+  SUPER_ADMIN: "SUPER_ADMIN",
+  MANAGER: "MANAGER", 
+  WORKER: "WORKER",
+  BUYER: "BUYER",
+  SUPPLIER: "SUPPLIER"
+} as const;
 
 // === Lazy-loaded Pages ===
-// Public
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const RegisterPage = lazy(() => import("./pages/RegisterPage"));
 const UnauthorizedPage = lazy(() => import("./pages/UnauthorizedPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
-const RoleBasedRedirect = lazy(() => import("./pages/RoleBasedRedirect"));
-const UnifiedLayout = lazy(() => import("./layouts/UnifiedLayout"));
+const VerifyEmailPage = lazy(() => import("./pages/VerifyEmail"));
+const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
+const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage"));
+const MFASetupPage = lazy(() => import("./pages/MFASetupPage"));
+const MFAVerifyPage = lazy(() => import("./pages/MFAVerifyPage"));
+
+// Super Admin
+const SuperAdminDashboard = lazy(() => import("./features/roles/superadmin/components/SuperAdminDashboard"));
+const UserManagement = lazy(() => import("./features/roles/superadmin/components/UserManagement"));
+const RoleManagement = lazy(() => import("./features/roles/superadmin/components/RoleManagement"));
+const SystemControl = lazy(() => import("./features/roles/superadmin/components/SystemControl"));
+const SystemMonitoring = lazy(() => import("./features/roles/superadmin/components/SystemMonitoring"));
+const AuditLogs = lazy(() => import("./features/roles/superadmin/components/AuditLogs"));
+const SecurityLogs = lazy(() => import("./features/roles/superadmin/components/SecurityLogs"));
+const SystemConfig = lazy(() => import("./features/roles/superadmin/components/SystemConfig"));
+const DatabaseManagement = lazy(() => import("./features/roles/superadmin/components/DatabaseManagement"));
+const BackupRestore = lazy(() => import("./features/roles/superadmin/components/BackupRestore"));
 
 // Manager
 const ManagerDashboard = lazy(() => import("./features/roles/manager/pages/DashboardPage"));
 const UsersPage = lazy(() => import("./features/roles/manager/pages/UsersPage"));
 const InventoryPage = lazy(() => import("./features/roles/manager/pages/InventoryPage"));
 const InventoryReportPage = lazy(() => import("./features/roles/manager/pages/InventoryReportPage"));
-const AddItemPage = lazy(() => import("./features/roles/manager/pages/AddItemPage"));
 const ManagerReports = lazy(() => import("./features/roles/manager/pages/ReportsPage"));
 const AlertsPage = lazy(() => import("./features/roles/manager/pages/AlertsPage"));
 const ManagerSettings = lazy(() => import("./features/roles/manager/pages/SettingPage"));
+const AddItemPage = lazy(() => import("./features/roles/manager/pages/main-inventory/add-item"));
+const DispatchFactoryPage = lazy(() => import("./features/roles/manager/pages/main-inventory/dispatch/dispatch-factory"));
+const DispatchExternalPage = lazy(() => import("./features/roles/manager/pages/main-inventory/dispatch/dispatch-external"));
+const SearchEditPage = lazy(() => import("./features/roles/manager/pages/main-inventory/search-edit"));
+const ViewStockPage = lazy(() => import("./features/roles/manager/pages/main-inventory/view-stock"));
+const DeleteFromStockPage = lazy(() => import("./features/roles/manager/pages/main-inventory/delete-from-stock"));
+const DeleteFromFactoryPage = lazy(() => import("./features/roles/manager/pages/main-inventory/delete-from-factory"));
+const DeleteFromExternalPage = lazy(() => import("./features/roles/manager/pages/main-inventory/delete-from-external"));
+const TransferToPrintPage = lazy(() => import("./features/roles/manager/pages/main-inventory/transfer-to-print"));
+const FactoryReturnPage = lazy(() => import("./features/roles/manager/pages/main-inventory/factory-return"));
+const PrintStockManager = lazy(() => import("./features/roles/manager/pages/PrintStockManager"));
+const AccessoriesViewStockPage = lazy(() => import("./features/roles/manager/pages/accessories/view-stock"));
+const MonofyaAddItemPage = lazy(() => import("./features/roles/manager/pages/monofya/add-item"));
+const MonofyaViewStockPage = lazy(() => import("./features/roles/manager/pages/monofya/view-stock"));
+const InvoiceSystemPage = lazy(() => import("./features/roles/manager/pages/main-inventory/invoices/InvoiceSystem"));
+const ItemMovementsPage = lazy(() => import("./features/roles/manager/pages/main-inventory/item-movements/ItemMovementsPage"));
+const AccessoryManagementPage = lazy(() => import("./features/roles/manager/pages/accessories/AccessoryManagementPage"));
+const StockAdjustmentPage = lazy(() => import("./features/roles/manager/pages/main-inventory/stock-adjustment/StockAdjustmentPage"));
+const BatchOperationsPage = lazy(() => import("./features/roles/manager/pages/main-inventory/batch-operations/BatchOperationsPage"));
+const LocationTransfersPage = lazy(() => import("./features/roles/manager/pages/main-inventory/location-transfers/LocationTransfersPage"));
 
 // Supplier
 const SupplierDashboard = lazy(() => import("./features/roles/supplier/pages/DashboardPage"));
 const ProductsPage = lazy(() => import("./features/roles/supplier/pages/ProductsPage"));
 const ShipmentsPage = lazy(() => import("./features/roles/supplier/pages/ShipmentsPage"));
+const SupplierInvoicesPage = lazy(() => import("./features/roles/supplier/pages/InvoicesPage"));
+const SupplierSettings = lazy(() => import("./features/roles/supplier/pages/SettingPage"));
+const SupplierOrdersPage = lazy(() => import("./features/roles/supplier/pages/OrdersPage"));
+const SupplierPerformancePage = lazy(() => import("./features/roles/supplier/pages/PerformancePage"));
 
 // Worker
 const WorkerDashboard = lazy(() => import("./features/roles/worker/pages/DashboardPage"));
@@ -41,6 +88,10 @@ const TasksPage = lazy(() => import("./features/roles/worker/pages/TasksPage"));
 const ScanPage = lazy(() => import("./features/roles/worker/pages/ScanPage"));
 const WorkerReports = lazy(() => import("./features/roles/worker/pages/ReportsPage"));
 const WorkerSettings = lazy(() => import("./features/roles/worker/pages/SettingPage"));
+const FactoryOperationsPage = lazy(() => import("./features/roles/worker/pages/FactoryOperationsPage"));
+const QualityControlPage = lazy(() => import("./features/roles/worker/pages/QualityControlPage"));
+const ProductionTrackingPage = lazy(() => import("./features/roles/worker/pages/ProductionTrackingPage"));
+const MaintenancePage = lazy(() => import("./features/roles/worker/pages/MaintenancePage"));
 
 // Buyer
 const BuyerDashboard = lazy(() => import("./features/roles/buyer/pages/DashboardPage"));
@@ -48,6 +99,16 @@ const BuyerOrders = lazy(() => import("./features/roles/buyer/pages/OrdersPage")
 const BuyerSuppliers = lazy(() => import("./features/roles/buyer/pages/SuppliersPage"));
 const BuyerReports = lazy(() => import("./features/roles/buyer/pages/ReportsPage"));
 const BuyerSettings = lazy(() => import("./features/roles/buyer/pages/SettingPage"));
+const PurchaseInvoicesPage = lazy(() => import("./features/roles/buyer/pages/PurchaseInvoicesPage"));
+const SupplierManagementPage = lazy(() => import("./features/roles/buyer/pages/SupplierManagementPage"));
+const ProcurementPage = lazy(() => import("./features/roles/buyer/pages/ProcurementPage"));
+const BudgetManagementPage = lazy(() => import("./features/roles/buyer/pages/BudgetManagementPage"));
+
+// Profile & Settings
+const ProfilePage = lazy(() => import("./pages/ProfilePage"));
+const SecuritySettingsPage = lazy(() => import("./pages/SecuritySettingsPage"));
+const NotificationSettingsPage = lazy(() => import("./pages/NotificationSettingsPage"));
+const ChangePasswordPage = lazy(() => import("./pages/ChangePasswordPage"));
 
 // === Page Transition Wrapper ===
 const PageTransitionWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -61,105 +122,112 @@ const PageTransitionWrapper: React.FC<{ children: React.ReactNode }> = ({ childr
   </motion.div>
 );
 
-// === App Routes ===
-const AppRoutes: React.FC = () => {
-  const location = useLocation();
-  const isAuthPage = ["/login", "/register"].includes(location.pathname);
+// === Protected Layout Wrapper ===
+const ProtectedLayout: React.FC = () => (
+  <ErrorBoundary>
+    <Suspense fallback={<LoadingSpinner fullScreen />}>
+      <UnifiedLayout />
+    </Suspense>
+  </ErrorBoundary>
+);
 
-  return (
-    <div className={isAuthPage ? "" : "bg-gray-100 dark:bg-gray-950"} dir="rtl">
-      <AnimatePresence mode="wait">
-        <Routes location={location} key={location.pathname}>
-          {/* Public Routes */}
-          <Route path="/login" element={<PageTransitionWrapper><LoginPage /></PageTransitionWrapper>} />
-          <Route path="/register" element={<PageTransitionWrapper><RegisterPage /></PageTransitionWrapper>} />
-          <Route path="/unauthorized" element={<PageTransitionWrapper><UnauthorizedPage /></PageTransitionWrapper>} />
-          <Route path="/" element={<PageTransitionWrapper><RoleBasedRedirect /></PageTransitionWrapper>} />
+// === Role-based redirect paths ===
+const ROLE_REDIRECT_PATHS = {
+  [ROLES.SUPER_ADMIN]: "/superadmin/dashboard",
+  [ROLES.MANAGER]: "/manager/dashboard",
+  [ROLES.WORKER]: "/worker/dashboard",
+  [ROLES.BUYER]: "/buyer/dashboard",
+  [ROLES.SUPPLIER]: "/supplier/dashboard"
+} as const;
 
-          {/* Manager Routes */}
-          <Route
-            path="/manager/*"
-            element={
-              <RequireRole allowedRoles={[ROLES.MANAGER]}>
-                <UnifiedLayout />
-              </RequireRole>
-            }
-          >
-            <Route index element={<Navigate to="dashboard" replace />} />
-            <Route path="dashboard" element={<ManagerDashboard />} />
-            <Route path="users" element={<UsersPage />} />
-            <Route path="inventory" element={<InventoryPage />} />
-            <Route path="inventory-report" element={<InventoryReportPage />} />
-            <Route path="add-item" element={<AddItemPage />} />
-            <Route path="reports" element={<ManagerReports />} />
-            <Route path="alerts" element={<AlertsPage />} />
-            <Route path="settings" element={<ManagerSettings />} />
-            <Route path="*" element={<Navigate to="dashboard" replace />} />
-          </Route>
-
-          {/* Supplier Routes */}
-          <Route
-            path="/supplier/*"
-            element={
-              <RequireRole allowedRoles={[ROLES.SUPPLIER]}>
-                <UnifiedLayout />
-              </RequireRole>
-            }
-          >
-            <Route index element={<Navigate to="dashboard" replace />} />
-            <Route path="dashboard" element={<SupplierDashboard />} />
-            <Route path="products" element={<ProductsPage />} />
-            <Route path="shipments" element={<ShipmentsPage />} />
-            <Route path="*" element={<Navigate to="dashboard" replace />} />
-          </Route>
-
-          {/* Worker Routes */}
-          <Route
-            path="/worker/*"
-            element={
-              <RequireRole allowedRoles={[ROLES.WORKER]}>
-                <UnifiedLayout />
-              </RequireRole>
-            }
-          >
-            <Route index element={<Navigate to="dashboard" replace />} />
-            <Route path="dashboard" element={<WorkerDashboard />} />
-            <Route path="tasks" element={<TasksPage />} />
-            <Route path="scan" element={<ScanPage />} />
-            <Route path="reports" element={<WorkerReports />} />
-            <Route path="settings" element={<WorkerSettings />} />
-            <Route path="*" element={<Navigate to="dashboard" replace />} />
-          </Route>
-
-          {/* Buyer Routes */}
-          <Route
-            path="/buyer/*"
-            element={
-              <RequireRole allowedRoles={[ROLES.BUYER]}>
-                <UnifiedLayout />
-              </RequireRole>
-            }
-          >
-            <Route index element={<Navigate to="dashboard" replace />} />
-            <Route path="dashboard" element={<BuyerDashboard />} />
-            <Route path="orders" element={<BuyerOrders />} />
-            <Route path="suppliers" element={<BuyerSuppliers />} />
-            <Route path="reports" element={<BuyerReports />} />
-            <Route path="settings" element={<BuyerSettings />} />
-            <Route path="*" element={<Navigate to="dashboard" replace />} />
-          </Route>
-
-          {/* Not Found */}
-          <Route path="*" element={<PageTransitionWrapper><NotFoundPage /></PageTransitionWrapper>} />
-        </Routes>
-      </AnimatePresence>
-    </div>
-  );
+// === Simplified Protected Route Component ===
+const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, loading, initialized } = useAuth();
+  
+  if (loading || !initialized) {
+    return <LoadingSpinner fullScreen />;
+  }
+  
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  
+  return <>{children}</>;
 };
 
-// === App Entry ===
+// === Public Route Component ===
+const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, loading } = useAuth();
+  
+  if (loading) {
+    return <LoadingSpinner fullScreen />;
+  }
+  
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
+  
+  return <>{children}</>;
+};
+
+// === ULTIMATE SUPER_ADMIN ACCESS COMPONENT ===
+const SuperAdminAccess: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isSuperAdmin } = useAuth();
+  
+  // SUPER_ADMIN has access to EVERYTHING - no restrictions
+  if (isSuperAdmin) {
+    return <>{children}</>;
+  }
+  
+  return <Navigate to="/unauthorized" replace />;
+};
+
+// === ROLE-SPECIFIC ACCESS COMPONENTS ===
+const ManagerAccess: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isSuperAdmin } = useAuth();
+  
+  // SUPER_ADMIN can access everything, Manager can access their routes
+  if (isSuperAdmin || user?.role_name === ROLES.MANAGER) {
+    return <>{children}</>;
+  }
+  
+  return <Navigate to="/unauthorized" replace />;
+};
+
+const WorkerAccess: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isSuperAdmin } = useAuth();
+  
+  if (isSuperAdmin || user?.role_name === ROLES.WORKER) {
+    return <>{children}</>;
+  }
+  
+  return <Navigate to="/unauthorized" replace />;
+};
+
+const BuyerAccess: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isSuperAdmin } = useAuth();
+  
+  if (isSuperAdmin || user?.role_name === ROLES.BUYER) {
+    return <>{children}</>;
+  }
+  
+  return <Navigate to="/unauthorized" replace />;
+};
+
+const SupplierAccess: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isSuperAdmin } = useAuth();
+  
+  if (isSuperAdmin || user?.role_name === ROLES.SUPPLIER) {
+    return <>{children}</>;
+  }
+  
+  return <Navigate to="/unauthorized" replace />;
+};
+
+// === Main App Component ===
 const App: React.FC = () => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const location = useLocation();
 
   useEffect(() => {
     const goOnline = () => setIsOnline(true);
@@ -179,8 +247,221 @@ const App: React.FC = () => {
       <ErrorBoundary>
         <Suspense fallback={<LoadingSpinner fullScreen />}>
           <AuthProvider>
-            {!isOnline && <OfflineBanner />}
-            <AppRoutes />
+            <ThemeProvider>
+              {!isOnline && <OfflineBanner />}
+              
+              <AnimatePresence mode="wait">
+                <Routes location={location} key={location.pathname}>
+                  {/* ================= PUBLIC ROUTES ================= */}
+                  <Route path="/login" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <LoginPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/register" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <RegisterPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/verify-email" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <VerifyEmailPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/forgot-password" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <ForgotPasswordPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/reset-password" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <ResetPasswordPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/mfa-setup" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <MFASetupPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/mfa-verify" element={
+                    <PublicRoute>
+                      <PageTransitionWrapper>
+                        <MFAVerifyPage />
+                      </PageTransitionWrapper>
+                    </PublicRoute>
+                  } />
+                  
+                  <Route path="/unauthorized" element={
+                    <PageTransitionWrapper>
+                      <UnauthorizedPage />
+                    </PageTransitionWrapper>
+                  } />
+
+                  {/* ================= PROTECTED ROUTES ================= */}
+                  <Route element={<ProtectedRoute><ProtectedLayout /></ProtectedRoute>}>
+                    {/* Root redirect */}
+                    <Route path="/" element={<RoleBasedDashboardRedirect />} />
+
+                    {/* ================= SUPER ADMIN EXCLUSIVE ROUTES ================= */}
+                    <Route path="/superadmin" element={
+                      <SuperAdminAccess>
+                        <Outlet />
+                      </SuperAdminAccess>
+                    }>
+                      <Route index element={<Navigate to="dashboard" replace />} />
+                      <Route path="dashboard" element={<PageTransitionWrapper><SuperAdminDashboard /></PageTransitionWrapper>} />
+                      <Route path="users" element={<PageTransitionWrapper><UserManagement /></PageTransitionWrapper>} />
+                      <Route path="roles" element={<PageTransitionWrapper><RoleManagement /></PageTransitionWrapper>} />
+                      <Route path="system" element={<PageTransitionWrapper><SystemControl /></PageTransitionWrapper>} />
+                      <Route path="monitoring" element={<PageTransitionWrapper><SystemMonitoring /></PageTransitionWrapper>} />
+                      <Route path="audit-logs" element={<PageTransitionWrapper><AuditLogs /></PageTransitionWrapper>} />
+                      <Route path="security-logs" element={<PageTransitionWrapper><SecurityLogs /></PageTransitionWrapper>} />
+                      <Route path="system-config" element={<PageTransitionWrapper><SystemConfig /></PageTransitionWrapper>} />
+                      <Route path="database" element={<PageTransitionWrapper><DatabaseManagement /></PageTransitionWrapper>} />
+                      <Route path="backup" element={<PageTransitionWrapper><BackupRestore /></PageTransitionWrapper>} />
+                    </Route>
+
+                    {/* ================= MANAGER ROUTES (SUPER_ADMIN + MANAGER) ================= */}
+                    <Route path="/manager" element={
+                      <ManagerAccess>
+                        <Outlet />
+                      </ManagerAccess>
+                    }>
+                      <Route index element={<Navigate to="dashboard" replace />} />
+                      <Route path="dashboard" element={<PageTransitionWrapper><ManagerDashboard /></PageTransitionWrapper>} />
+                      <Route path="users" element={<PageTransitionWrapper><UsersPage /></PageTransitionWrapper>} />
+                      <Route path="inventory" element={<PageTransitionWrapper><InventoryPage /></PageTransitionWrapper>} />
+                      <Route path="inventory-report" element={<PageTransitionWrapper><InventoryReportPage /></PageTransitionWrapper>} />
+                      <Route path="reports" element={<PageTransitionWrapper><ManagerReports /></PageTransitionWrapper>} />
+                      <Route path="alerts" element={<PageTransitionWrapper><AlertsPage /></PageTransitionWrapper>} />
+                      <Route path="settings" element={<PageTransitionWrapper><ManagerSettings /></PageTransitionWrapper>} />
+                      
+                      {/* Main Inventory Operations */}
+                      <Route path="main-inventory/add-item" element={<PageTransitionWrapper><AddItemPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/dispatch/dispatch-factory" element={<PageTransitionWrapper><DispatchFactoryPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/dispatch/dispatch-external" element={<PageTransitionWrapper><DispatchExternalPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/search-edit" element={<PageTransitionWrapper><SearchEditPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/view-stock" element={<PageTransitionWrapper><ViewStockPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/invoices" element={<PageTransitionWrapper><InvoiceSystemPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/item-movements" element={<PageTransitionWrapper><ItemMovementsPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/stock-adjustment" element={<PageTransitionWrapper><StockAdjustmentPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/batch-operations" element={<PageTransitionWrapper><BatchOperationsPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/location-transfers" element={<PageTransitionWrapper><LocationTransfersPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/delete-from-stock" element={<PageTransitionWrapper><DeleteFromStockPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/delete-from-factory" element={<PageTransitionWrapper><DeleteFromFactoryPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/delete-from-external" element={<PageTransitionWrapper><DeleteFromExternalPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/transfer-to-print" element={<PageTransitionWrapper><TransferToPrintPage /></PageTransitionWrapper>} />
+                      <Route path="main-inventory/factory-return" element={<PageTransitionWrapper><FactoryReturnPage /></PageTransitionWrapper>} />
+                      
+                      {/* Accessories Management */}
+                      <Route path="accessories" element={<PageTransitionWrapper><AccessoryManagementPage /></PageTransitionWrapper>} />
+                      <Route path="accessories/view-stock" element={<PageTransitionWrapper><AccessoriesViewStockPage /></PageTransitionWrapper>} />
+                      
+                      {/* Print & Monofya Management */}
+                      <Route path="print/manager" element={<PageTransitionWrapper><PrintStockManager /></PageTransitionWrapper>} />
+                      <Route path="monofya/add-item" element={<PageTransitionWrapper><MonofyaAddItemPage /></PageTransitionWrapper>} />
+                      <Route path="monofya/view-stock" element={<PageTransitionWrapper><MonofyaViewStockPage /></PageTransitionWrapper>} />
+                    </Route>
+
+                    {/* ================= SUPPLIER ROUTES (SUPER_ADMIN + SUPPLIER) ================= */}
+                    <Route path="/supplier" element={
+                      <SupplierAccess>
+                        <Outlet />
+                      </SupplierAccess>
+                    }>
+                      <Route index element={<Navigate to="dashboard" replace />} />
+                      <Route path="dashboard" element={<PageTransitionWrapper><SupplierDashboard /></PageTransitionWrapper>} />
+                      <Route path="products" element={<PageTransitionWrapper><ProductsPage /></PageTransitionWrapper>} />
+                      <Route path="shipments" element={<PageTransitionWrapper><ShipmentsPage /></PageTransitionWrapper>} />
+                      <Route path="orders" element={<PageTransitionWrapper><SupplierOrdersPage /></PageTransitionWrapper>} />
+                      <Route path="invoices" element={<PageTransitionWrapper><SupplierInvoicesPage /></PageTransitionWrapper>} />
+                      <Route path="performance" element={<PageTransitionWrapper><SupplierPerformancePage /></PageTransitionWrapper>} />
+                      <Route path="settings" element={<PageTransitionWrapper><SupplierSettings /></PageTransitionWrapper>} />
+                    </Route>
+
+                    {/* ================= WORKER ROUTES (SUPER_ADMIN + WORKER) ================= */}
+                    <Route path="/worker" element={
+                      <WorkerAccess>
+                        <Outlet />
+                      </WorkerAccess>
+                    }>
+                      <Route index element={<Navigate to="dashboard" replace />} />
+                      <Route path="dashboard" element={<PageTransitionWrapper><WorkerDashboard /></PageTransitionWrapper>} />
+                      <Route path="tasks" element={<PageTransitionWrapper><TasksPage /></PageTransitionWrapper>} />
+                      <Route path="scan" element={<PageTransitionWrapper><ScanPage /></PageTransitionWrapper>} />
+                      <Route path="reports" element={<PageTransitionWrapper><WorkerReports /></PageTransitionWrapper>} />
+                      <Route path="settings" element={<PageTransitionWrapper><WorkerSettings /></PageTransitionWrapper>} />
+                      <Route path="factory-operations" element={<PageTransitionWrapper><FactoryOperationsPage /></PageTransitionWrapper>} />
+                      <Route path="quality-control" element={<PageTransitionWrapper><QualityControlPage /></PageTransitionWrapper>} />
+                      <Route path="production-tracking" element={<PageTransitionWrapper><ProductionTrackingPage /></PageTransitionWrapper>} />
+                      <Route path="maintenance" element={<PageTransitionWrapper><MaintenancePage /></PageTransitionWrapper>} />
+                    </Route>
+
+                    {/* ================= BUYER ROUTES (SUPER_ADMIN + BUYER) ================= */}
+                    <Route path="/buyer" element={
+                      <BuyerAccess>
+                        <Outlet />
+                      </BuyerAccess>
+                    }>
+                      <Route index element={<Navigate to="dashboard" replace />} />
+                      <Route path="dashboard" element={<PageTransitionWrapper><BuyerDashboard /></PageTransitionWrapper>} />
+                      <Route path="orders" element={<PageTransitionWrapper><BuyerOrders /></PageTransitionWrapper>} />
+                      <Route path="suppliers" element={<PageTransitionWrapper><BuyerSuppliers /></PageTransitionWrapper>} />
+                      <Route path="reports" element={<PageTransitionWrapper><BuyerReports /></PageTransitionWrapper>} />
+                      <Route path="settings" element={<PageTransitionWrapper><BuyerSettings /></PageTransitionWrapper>} />
+                      <Route path="purchase-invoices" element={<PageTransitionWrapper><PurchaseInvoicesPage /></PageTransitionWrapper>} />
+                      <Route path="supplier-management" element={<PageTransitionWrapper><SupplierManagementPage /></PageTransitionWrapper>} />
+                      <Route path="procurement" element={<PageTransitionWrapper><ProcurementPage /></PageTransitionWrapper>} />
+                      <Route path="budget-management" element={<PageTransitionWrapper><BudgetManagementPage /></PageTransitionWrapper>} />
+                    </Route>
+
+                    {/* ================= COMMON PROFILE ROUTES (ALL AUTHENTICATED USERS) ================= */}
+                    <Route path="/profile" element={
+                      <PageTransitionWrapper><ProfilePage /></PageTransitionWrapper>
+                    } />
+                    
+                    <Route path="/security" element={
+                      <PageTransitionWrapper><SecuritySettingsPage /></PageTransitionWrapper>
+                    } />
+                    
+                    <Route path="/notifications" element={
+                      <PageTransitionWrapper><NotificationSettingsPage /></PageTransitionWrapper>
+                    } />
+                    
+                    <Route path="/change-password" element={
+                      <PageTransitionWrapper><ChangePasswordPage /></PageTransitionWrapper>
+                    } />
+
+                    {/* Catch all protected route */}
+                    <Route path="*" element={<NotFoundPage />} />
+                  </Route>
+
+                  {/* Redirect root to login for unauthenticated users */}
+                  <Route path="/" element={<Navigate to="/login" replace />} />
+                  
+                  {/* Catch all public route */}
+                  <Route path="*" element={<NotFoundPage />} />
+                </Routes>
+              </AnimatePresence>
+            </ThemeProvider>
           </AuthProvider>
         </Suspense>
       </ErrorBoundary>

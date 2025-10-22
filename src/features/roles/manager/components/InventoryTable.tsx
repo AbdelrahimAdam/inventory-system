@@ -11,6 +11,22 @@ import {
 
 const categories = ['كل', 'إكسسوارات', 'زجاج'];
 
+// Define the mapping of keys to column labels
+const columns = [
+  { key: 'name', label: 'الصنف' },
+  { key: 'code', label: 'الكود' },
+  { key: 'color', label: 'اللون' },
+  { key: 'cartons', label: 'الكراتين' },
+  { key: 'per_carton', label: 'في الكرتونة' },
+  { key: 'individual', label: 'الفردي' },
+  { key: 'supplier', label: 'المورد' },
+  { key: 'location', label: 'المكان' },
+  { key: 'notes', label: 'ملاحظات' },
+  { key: 'date_added', label: 'التاريخ' },
+  { key: 'added_quantity', label: 'المضافة' },
+  { key: 'remaining_quantity', label: 'المتبقية' },
+];
+
 const InventoryTable = ({ items = [], onEdit, onDelete }) => {
   const [selectedCategory, setSelectedCategory] = useState('كل');
 
@@ -18,6 +34,17 @@ const InventoryTable = ({ items = [], onEdit, onDelete }) => {
     selectedCategory === 'كل'
       ? items
       : items.filter((item) => item.category === selectedCategory);
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    return date.toLocaleDateString('ar-EG', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  };
 
   return (
     <div dir="rtl" className="space-y-4">
@@ -37,32 +64,38 @@ const InventoryTable = ({ items = [], onEdit, onDelete }) => {
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-lg border">
-        <Table>
+      <div className="overflow-x-auto rounded-lg border w-full">
+        <Table className="min-w-[800px]">
           <TableHeader>
             <TableRow>
-              <TableHead>المعرف</TableHead>
-              <TableHead>الاسم</TableHead>
-              <TableHead>الكمية</TableHead>
-              <TableHead>السعر</TableHead>
-              <TableHead>الفئة</TableHead>
-              <TableHead>الإجراءات</TableHead>
+              {columns.map((col) => (
+                <TableHead key={col.key} className="text-center">
+                  {col.label}
+                </TableHead>
+              ))}
+              <TableHead className="text-center">الإجراءات</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredItems.length > 0 ? (
               filteredItems.map((item) => (
                 <TableRow key={item.id}>
-                  <TableCell>{item.id}</TableCell>
-                  <TableCell>{item.name}</TableCell>
-                  <TableCell>{item.quantity}</TableCell>
-                  <TableCell>${item.price.toFixed(2)}</TableCell>
-                  <TableCell>{item.category}</TableCell>
-                  <TableCell className="flex gap-2">
+                  {columns.map(({ key }) => (
+                    <TableCell key={key} className="text-center">
+                      {key === 'date_added'
+                        ? formatDate(item[key])
+                        : item[key] ?? '-'}
+                    </TableCell>
+                  ))}
+                  <TableCell className="flex gap-2 justify-center flex-wrap">
                     <Button size="sm" variant="outline" onClick={() => onEdit(item)}>
                       تعديل
                     </Button>
-                    <Button size="sm" variant="destructive" onClick={() => onDelete(item.id)}>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => onDelete(item.id)}
+                    >
                       حذف
                     </Button>
                   </TableCell>
@@ -70,8 +103,8 @@ const InventoryTable = ({ items = [], onEdit, onDelete }) => {
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
-                  لا توجد عناصر في هذه الفئة
+                <TableCell colSpan={columns.length + 1} className="text-center text-muted-foreground">
+                  لا توجد بيانات
                 </TableCell>
               </TableRow>
             )}

@@ -1,9 +1,13 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import {
-  Package,
+  LayoutDashboard,
   ShoppingBag,
-  Truck
+  Truck,
+  ShoppingCart,
+  ScrollText,
+  BarChart2,
+  Settings,
 } from 'lucide-react';
 
 interface Props {
@@ -13,9 +17,13 @@ interface Props {
 
 const SupplierNav: React.FC<Props> = ({ collapsed, onLinkClick }) => {
   const navItems = [
-    { path: '/supplier/dashboard', icon: <Package />, label: 'لوحة القيادة' },
+    { path: '/supplier/dashboard', icon: <LayoutDashboard />, label: 'لوحة التحكم' },
     { path: '/supplier/products', icon: <ShoppingBag />, label: 'المنتجات' },
     { path: '/supplier/shipments', icon: <Truck />, label: 'الشحنات' },
+    { path: '/supplier/orders', icon: <ShoppingCart />, label: 'الطلبات' },
+    { path: '/supplier/invoices', icon: <ScrollText />, label: 'الفواتير' },
+    { path: '/supplier/performance', icon: <BarChart2 />, label: 'الأداء' },
+    { path: '/supplier/settings', icon: <Settings />, label: 'الإعدادات' },
   ];
 
   return (
