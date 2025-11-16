@@ -1,0 +1,12 @@
+{
+  "name": "firebase-superadmin-setup",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "createFirebaseSuperAdmin.js",
+  "scripts": {
+    "setup": "node createFirebaseSuperAdmin.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.11.0"
+  }
+}

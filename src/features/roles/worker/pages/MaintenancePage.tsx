@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Play,
-  Pause,
   RotateCcw,
   Filter,
   Search,
@@ -18,16 +17,27 @@ import {
   Calendar,
   Target,
   Award,
-  Tool,
   HardDrive,
   Settings,
   Zap,
-  Shield
+  Shield,
+  ClipboardList
 } from 'lucide-react';
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs, 
+  doc, 
+  updateDoc,
+  addDoc,
+  Timestamp 
+} from 'firebase/firestore';
+import { db } from '@/services/firebase';
 
 interface MaintenanceTask {
   id: string;
-  uuid: string;
   equipment_name: string;
   equipment_code: string;
   task_type: 'preventive' | 'corrective' | 'predictive' | 'emergency';
@@ -35,17 +45,17 @@ interface MaintenanceTask {
   assigned_to: string;
   status: 'scheduled' | 'in_progress' | 'completed' | 'overdue' | 'cancelled';
   priority: 'low' | 'medium' | 'high' | 'critical';
-  scheduled_date: string;
-  due_date: string;
-  completed_date?: string;
-  estimated_duration: number; // in hours
+  scheduled_date: Timestamp;
+  due_date: Timestamp;
+  completed_date?: Timestamp;
+  estimated_duration: number;
   actual_duration?: number;
   parts_required: string[];
   safety_instructions: string;
   notes?: string;
-  created_by: number;
-  created_at: string;
-  updated_at: string;
+  created_by: string;
+  created_at: Timestamp;
+  updated_at: Timestamp;
 }
 
 interface MaintenanceStats {
@@ -63,8 +73,8 @@ interface Equipment {
   code: string;
   type: string;
   status: 'operational' | 'maintenance' | 'down' | 'idle';
-  last_maintenance: string;
-  next_maintenance: string;
+  last_maintenance: Timestamp;
+  next_maintenance: Timestamp;
   utilization: number;
   health_score: number;
 }
@@ -81,185 +91,48 @@ const MaintenancePage: React.FC = () => {
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
 
-  // Mock data - replace with actual API calls
+  // Load data from Firebase
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      try {
+        // Load maintenance tasks
+        const tasksQuery = query(
+          collection(db, 'maintenanceTasks'),
+          orderBy('created_at', 'desc')
+        );
+        const tasksSnapshot = await getDocs(tasksQuery);
+        const tasksData = tasksSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as MaintenanceTask[];
 
-      const mockTasks: MaintenanceTask[] = [
-        {
-          id: '1',
-          uuid: 'task-uuid-1',
-          equipment_name: 'Automatic Filling Machine',
-          equipment_code: 'AFM-001',
-          task_type: 'preventive',
-          description: 'Monthly calibration and lubrication of filling nozzles',
-          assigned_to: 'Current User',
-          status: 'in_progress',
-          priority: 'high',
-          scheduled_date: '2024-01-15 08:00:00',
-          due_date: '2024-01-15 16:00:00',
-          estimated_duration: 4,
-          actual_duration: 2,
-          parts_required: ['Lubricant Oil', 'Calibration Tools', 'Cleaning Cloths'],
-          safety_instructions: 'Ensure machine is powered off and locked out before starting maintenance',
-          notes: 'Check nozzle alignment and pressure settings',
-          created_by: 3,
-          created_at: '2024-01-10 14:00:00',
-          updated_at: '2024-01-15 10:30:00'
-        },
-        {
-          id: '2',
-          uuid: 'task-uuid-2',
-          equipment_name: 'Conveyor System',
-          equipment_code: 'CVS-003',
-          task_type: 'corrective',
-          description: 'Replace worn-out belt and tensioner assembly',
-          assigned_to: 'Current User',
-          status: 'scheduled',
-          priority: 'critical',
-          scheduled_date: '2024-01-16 09:00:00',
-          due_date: '2024-01-16 13:00:00',
-          estimated_duration: 3,
-          parts_required: ['Conveyor Belt', 'Tensioner Assembly', 'Bearings'],
-          safety_instructions: 'Lock out conveyor power source. Use proper lifting equipment for belt replacement.',
-          notes: 'Urgent - affecting production line efficiency',
-          created_by: 2,
-          created_at: '2024-01-14 16:30:00',
-          updated_at: '2024-01-14 16:30:00'
-        },
-        {
-          id: '3',
-          uuid: 'task-uuid-3',
-          equipment_name: 'Packaging Sealer',
-          equipment_code: 'PKS-002',
-          task_type: 'preventive',
-          description: 'Weekly inspection and cleaning of heating elements',
-          assigned_to: 'Current User',
-          status: 'completed',
-          priority: 'medium',
-          scheduled_date: '2024-01-12 10:00:00',
-          due_date: '2024-01-12 12:00:00',
-          completed_date: '2024-01-12 11:30:00',
-          estimated_duration: 2,
-          actual_duration: 1.5,
-          parts_required: ['Cleaning Solution', 'Replacement Filters'],
-          safety_instructions: 'Allow machine to cool completely before inspection. Wear heat-resistant gloves.',
-          notes: 'Heating elements in good condition. Replaced air filters.',
-          created_by: 3,
-          created_at: '2024-01-08 09:00:00',
-          updated_at: '2024-01-12 11:30:00'
-        },
-        {
-          id: '4',
-          uuid: 'task-uuid-4',
-          equipment_name: 'Cooling System',
-          equipment_code: 'CLS-001',
-          task_type: 'predictive',
-          description: 'Vibration analysis and temperature monitoring',
-          assigned_to: 'Current User',
-          status: 'overdue',
-          priority: 'high',
-          scheduled_date: '2024-01-10 14:00:00',
-          due_date: '2024-01-13 18:00:00',
-          estimated_duration: 2,
-          parts_required: ['Vibration Sensor', 'Thermal Camera'],
-          safety_instructions: 'Monitor system while operational. Maintain safe distance from moving parts.',
-          notes: 'Delayed due to sensor calibration issues',
-          created_by: 2,
-          created_at: '2024-01-05 11:00:00',
-          updated_at: '2024-01-14 08:00:00'
-        },
-        {
-          id: '5',
-          uuid: 'task-uuid-5',
-          equipment_name: 'Mixing Tank Agitator',
-          equipment_code: 'MTA-004',
-          task_type: 'emergency',
-          description: 'Emergency repair of agitator motor coupling',
-          assigned_to: 'Current User',
-          status: 'scheduled',
-          priority: 'critical',
-          scheduled_date: '2024-01-15 13:00:00',
-          due_date: '2024-01-15 17:00:00',
-          estimated_duration: 3,
-          parts_required: ['Motor Coupling', 'Alignment Tools', 'Seal Kit'],
-          safety_instructions: 'EMERGENCY: Full lockout/tagout required. Electrical hazard present.',
-          notes: 'Production line halted until repair completed',
-          created_by: 1,
-          created_at: '2024-01-15 11:15:00',
-          updated_at: '2024-01-15 11:15:00'
-        }
-      ];
+        // Load equipment
+        const equipmentQuery = query(collection(db, 'equipment'));
+        const equipmentSnapshot = await getDocs(equipmentQuery);
+        const equipmentData = equipmentSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Equipment[];
 
-      const mockEquipment: Equipment[] = [
-        {
-          id: '1',
-          name: 'Automatic Filling Machine',
-          code: 'AFM-001',
-          type: 'Filling',
-          status: 'maintenance',
-          last_maintenance: '2024-01-15 10:30:00',
-          next_maintenance: '2024-02-15 08:00:00',
-          utilization: 85,
-          health_score: 92
-        },
-        {
-          id: '2',
-          name: 'Conveyor System',
-          code: 'CVS-003',
-          type: 'Transport',
-          status: 'operational',
-          last_maintenance: '2024-01-10 14:00:00',
-          next_maintenance: '2024-01-24 09:00:00',
-          utilization: 78,
-          health_score: 88
-        },
-        {
-          id: '3',
-          name: 'Packaging Sealer',
-          code: 'PKS-002',
-          type: 'Packaging',
-          status: 'operational',
-          last_maintenance: '2024-01-12 11:30:00',
-          next_maintenance: '2024-01-19 10:00:00',
-          utilization: 92,
-          health_score: 95
-        },
-        {
-          id: '4',
-          name: 'Cooling System',
-          code: 'CLS-001',
-          type: 'Utilities',
-          status: 'down',
-          last_maintenance: '2023-12-20 16:00:00',
-          next_maintenance: '2024-01-20 14:00:00',
-          utilization: 65,
-          health_score: 72
-        },
-        {
-          id: '5',
-          name: 'Mixing Tank Agitator',
-          code: 'MTA-004',
-          type: 'Mixing',
-          status: 'down',
-          last_maintenance: '2024-01-08 09:00:00',
-          next_maintenance: '2024-01-22 11:00:00',
-          utilization: 88,
-          health_score: 85
-        }
-      ];
-
-      setTasks(mockTasks);
-      setFilteredTasks(mockTasks);
-      setEquipment(mockEquipment);
-      setIsLoading(false);
+        setTasks(tasksData);
+        setFilteredTasks(tasksData);
+        setEquipment(equipmentData);
+      } catch (error) {
+        console.error('Error loading data:', error);
+        // Fallback to empty arrays if Firebase fails
+        setTasks([]);
+        setEquipment([]);
+        setFilteredTasks([]);
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     loadData();
   }, []);
 
+  // Filter tasks based on search and filters
   useEffect(() => {
     let filtered = tasks;
 
@@ -286,14 +159,31 @@ const MaintenancePage: React.FC = () => {
     setFilteredTasks(filtered);
   }, [searchTerm, statusFilter, priorityFilter, typeFilter, tasks]);
 
+  // Calculate maintenance statistics
   const maintenanceStats: MaintenanceStats = {
     total_tasks: tasks.length,
-    completed_this_week: tasks.filter(t => t.status === 'completed' && new Date(t.completed_date!).getTime() > Date.now() - 7 * 24 * 60 * 60 * 1000).length,
+    completed_this_week: tasks.filter(t => {
+      if (t.status !== 'completed' || !t.completed_date) return false;
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      return t.completed_date.toDate() > oneWeekAgo;
+    }).length,
     overdue_tasks: tasks.filter(t => t.status === 'overdue').length,
     preventive_maintenance: tasks.filter(t => t.task_type === 'preventive').length,
-    equipment_uptime: 94.2,
-    maintenance_cost: 12500
+    equipment_uptime: calculateEquipmentUptime(),
+    maintenance_cost: calculateMaintenanceCost()
   };
+
+  function calculateEquipmentUptime(): number {
+    if (equipment.length === 0) return 0;
+    const operationalCount = equipment.filter(eq => eq.status === 'operational').length;
+    return Math.round((operationalCount / equipment.length) * 100);
+  }
+
+  function calculateMaintenanceCost(): number {
+    // Simple calculation - in real app, this would come from actual cost data
+    return tasks.filter(t => t.status === 'completed').length * 250;
+  }
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -364,15 +254,36 @@ const MaintenancePage: React.FC = () => {
     return 'text-red-600';
   };
 
-  const updateTaskStatus = (taskId: string, newStatus: MaintenanceTask['status']) => {
-    setTasks(prev => prev.map(task =>
-      task.id === taskId ? { 
-        ...task, 
+  const updateTaskStatus = async (taskId: string, newStatus: MaintenanceTask['status']) => {
+    try {
+      const taskRef = doc(db, 'maintenanceTasks', taskId);
+      const updateData: any = {
         status: newStatus,
-        updated_at: new Date().toISOString(),
-        ...(newStatus === 'completed' && !task.completed_date ? { completed_date: new Date().toISOString() } : {})
-      } : task
-    ));
+        updated_at: Timestamp.now()
+      };
+
+      if (newStatus === 'completed' && !selectedTask?.completed_date) {
+        updateData.completed_date = Timestamp.now();
+      }
+
+      await updateDoc(taskRef, updateData);
+
+      // Update local state
+      setTasks(prev => prev.map(task =>
+        task.id === taskId ? { 
+          ...task, 
+          ...updateData
+        } : task
+      ));
+
+      // Update selected task if it's the one being modified
+      if (selectedTask && selectedTask.id === taskId) {
+        setSelectedTask(prev => prev ? { ...prev, ...updateData } : null);
+      }
+
+    } catch (error) {
+      console.error('Error updating task status:', error);
+    }
   };
 
   const viewTaskDetails = (task: MaintenanceTask) => {
@@ -382,11 +293,56 @@ const MaintenancePage: React.FC = () => {
 
   const exportMaintenanceReport = () => {
     // Implement export functionality
-    console.log('Exporting maintenance report...');
+    const reportData = {
+      generated: new Date().toISOString(),
+      stats: maintenanceStats,
+      tasks: filteredTasks,
+      equipment: equipment
+    };
+    
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `maintenance-report-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  const isTaskOverdue = (dueDate: string) => {
-    return new Date(dueDate) < new Date();
+  const isTaskOverdue = (dueDate: Timestamp) => {
+    return dueDate.toDate() < new Date();
+  };
+
+  const createNewTask = async () => {
+    try {
+      const newTask = {
+        equipment_name: 'New Equipment',
+        equipment_code: 'EQP-NEW',
+        task_type: 'preventive' as const,
+        description: 'New maintenance task',
+        assigned_to: 'Current User',
+        status: 'scheduled' as const,
+        priority: 'medium' as const,
+        scheduled_date: Timestamp.now(),
+        due_date: Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), // 7 days from now
+        estimated_duration: 2,
+        parts_required: [],
+        safety_instructions: 'Follow standard safety procedures',
+        created_by: 'current-user-id',
+        created_at: Timestamp.now(),
+        updated_at: Timestamp.now()
+      };
+
+      const docRef = await addDoc(collection(db, 'maintenanceTasks'), newTask);
+      
+      // Update local state
+      setTasks(prev => [...prev, { id: docRef.id, ...newTask }]);
+      
+    } catch (error) {
+      console.error('Error creating new task:', error);
+    }
   };
 
   if (isLoading) {
@@ -425,6 +381,13 @@ const MaintenancePage: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <button
+                onClick={createNewTask}
+                className="px-6 py-3 bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-medium shadow-sm hover:shadow-md transition-all duration-200 flex items-center gap-2 group"
+              >
+                <ClipboardList className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                New Task
+              </button>
               <button
                 onClick={exportMaintenanceReport}
                 className="px-6 py-3 bg-white/80 border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-xl font-medium shadow-sm hover:shadow-md transition-all duration-200 flex items-center gap-2 group backdrop-blur-sm"
@@ -523,7 +486,7 @@ const MaintenancePage: React.FC = () => {
 
                   <div className="mt-3 pt-3 border-t border-slate-200/60">
                     <p className="text-xs text-slate-600">
-                      Next Maintenance: {new Date(item.next_maintenance).toLocaleDateString()}
+                      Next Maintenance: {item.next_maintenance.toDate().toLocaleDateString()}
                     </p>
                   </div>
                 </div>
@@ -637,7 +600,7 @@ const MaintenancePage: React.FC = () => {
                         </span>
                         <div className="flex items-center gap-2 text-sm text-slate-600">
                           <Calendar className="w-4 h-4" />
-                          <span>Due: {new Date(task.due_date).toLocaleDateString()}</span>
+                          <span>Due: {task.due_date.toDate().toLocaleDateString()}</span>
                           {isTaskOverdue(task.due_date) && task.status !== 'completed' && (
                             <span className="text-red-600 flex items-center gap-1">
                               <AlertTriangle className="w-3 h-3" />
@@ -747,20 +710,20 @@ const MaintenancePage: React.FC = () => {
                     <div className="flex justify-between">
                       <span className="text-slate-600">Scheduled:</span>
                       <span className="font-semibold text-slate-900">
-                        {new Date(selectedTask.scheduled_date).toLocaleString()}
+                        {selectedTask.scheduled_date.toDate().toLocaleString()}
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-600">Due Date:</span>
                       <span className={`font-semibold ${isTaskOverdue(selectedTask.due_date) ? 'text-red-600' : 'text-slate-900'}`}>
-                        {new Date(selectedTask.due_date).toLocaleString()}
+                        {selectedTask.due_date.toDate().toLocaleString()}
                       </span>
                     </div>
                     {selectedTask.completed_date && (
                       <div className="flex justify-between">
                         <span className="text-slate-600">Completed:</span>
                         <span className="font-semibold text-slate-900">
-                          {new Date(selectedTask.completed_date).toLocaleString()}
+                          {selectedTask.completed_date.toDate().toLocaleString()}
                         </span>
                       </div>
                     )}
@@ -792,7 +755,7 @@ const MaintenancePage: React.FC = () => {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
                 <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
                   <h3 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
-                    <Tool className="w-4 h-4" />
+                    <Settings className="w-4 h-4" />
                     Task Description
                   </h3>
                   <p className="text-blue-800">{selectedTask.description}</p>

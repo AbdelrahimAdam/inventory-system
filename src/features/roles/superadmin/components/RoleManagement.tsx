@@ -15,14 +15,29 @@ import {
   Key,
   Filter,
   Eye,
-  FileText,
   Download,
   CheckCircle,
   Settings
 } from 'lucide-react';
+import { getFirestore } from '../../../../firebase/config';
+import { 
+  collection, 
+  doc, 
+  getDocs, 
+  getDoc, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  orderBy,
+  writeBatch,
+  onSnapshot,
+  serverTimestamp
+} from 'firebase/firestore';
 
 interface Role {
-  id: number;
+  id: string;
   uuid: string;
   name: string;
   description: string | null;
@@ -31,14 +46,14 @@ interface Role {
   max_session_hours: number;
   password_policy: string;
   mfa_required: boolean;
-  created_at: string;
-  updated_at: string;
-  created_by: number;
+  created_at: any;
+  updated_at: any;
+  created_by: string;
   user_count?: number;
 }
 
 interface Feature {
-  id: number;
+  id: string;
   uuid: string;
   feature_code: string;
   feature_name: string;
@@ -51,9 +66,9 @@ interface Feature {
 }
 
 interface RolePermission {
-  id: number;
-  role_id: number;
-  feature_id: number;
+  id: string;
+  role_id: string;
+  feature_id: string;
   can_view: boolean;
   can_create: boolean;
   can_edit: boolean;
@@ -64,21 +79,6 @@ interface RolePermission {
   edit_scope: 'NONE' | 'OWN' | 'ALL';
   export_scope: 'NONE' | 'OWN' | 'ALL';
   feature?: Feature;
-}
-
-interface RolesResponse {
-  roles: Role[];
-  total_count: number;
-  current_page: number;
-  total_pages: number;
-  has_next: boolean;
-  has_prev: boolean;
-}
-
-interface ApiResponse<T> {
-  success: boolean;
-  data: T;
-  message?: string;
 }
 
 const RoleManagement: React.FC = () => {
@@ -131,124 +131,186 @@ const RoleManagement: React.FC = () => {
     'CUSTOM'
   ];
 
-  // Enhanced API call helper with better error handling
-  const apiCall = async <T,>(
-    url: string, 
-    options: RequestInit = {}
-  ): Promise<ApiResponse<T>> => {
-    const defaultOptions: RequestInit = {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('token')}`,
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-      ...options,
+  // Real-time Firestore listeners
+  useEffect(() => {
+    let unsubscribeRoles: () => void;
+    let unsubscribeFeatures: () => void;
+
+    const initializeFirestore = async () => {
+      try {
+        setLoading(true);
+        const db = await getFirestore();
+
+        // Real-time roles listener
+        let rolesQuery = query(collection(db, 'roles'), orderBy('name'));
+        
+        unsubscribeRoles = onSnapshot(rolesQuery, 
+          (snapshot) => {
+            const rolesData: Role[] = [];
+            snapshot.forEach((doc) => {
+              const data = doc.data();
+              rolesData.push({
+                id: doc.id,
+                ...data
+              } as Role);
+            });
+            
+            // Apply filters
+            let filteredRoles = rolesData;
+            
+            if (filters.search) {
+              filteredRoles = filteredRoles.filter(role => 
+                role.name.toLowerCase().includes(filters.search.toLowerCase()) ||
+                (role.description && role.description.toLowerCase().includes(filters.search.toLowerCase()))
+              );
+            }
+
+            if (filters.isSystemRole) {
+              filteredRoles = filteredRoles.filter(role => 
+                role.is_system_role === (filters.isSystemRole === 'true')
+              );
+            }
+
+            if (filters.securityLevel) {
+              filteredRoles = filteredRoles.filter(role => 
+                role.security_level === parseInt(filters.securityLevel)
+              );
+            }
+
+            if (filters.mfaRequired) {
+              filteredRoles = filteredRoles.filter(role => 
+                role.mfa_required === (filters.mfaRequired === 'true')
+              );
+            }
+
+            // Calculate pagination
+            const startIndex = (currentPage - 1) * rolesPerPage;
+            const endIndex = startIndex + rolesPerPage;
+            const paginatedRoles = filteredRoles.slice(startIndex, endIndex);
+
+            setRoles(paginatedRoles);
+            setTotalCount(filteredRoles.length);
+            setTotalPages(Math.ceil(filteredRoles.length / rolesPerPage));
+            setLoading(false);
+          },
+          (error) => {
+            console.error('Error fetching roles:', error);
+            setError('فشل في تحميل الأدوار');
+            setLoading(false);
+          }
+        );
+
+        // Real-time features listener
+        const featuresQuery = query(collection(db, 'features'), orderBy('feature_name'));
+        
+        unsubscribeFeatures = onSnapshot(featuresQuery, 
+          (snapshot) => {
+            const featuresData: Feature[] = [];
+            snapshot.forEach((doc) => {
+              featuresData.push({
+                id: doc.id,
+                ...doc.data()
+              } as Feature);
+            });
+            setFeatures(featuresData);
+          },
+          (error) => {
+            console.error('Error fetching features:', error);
+          }
+        );
+
+      } catch (error) {
+        console.error('Error initializing Firestore:', error);
+        setError('فشل في الاتصال بقاعدة البيانات');
+        setLoading(false);
+      }
     };
 
+    initializeFirestore();
+
+    // Cleanup listeners on unmount
+    return () => {
+      if (unsubscribeRoles) unsubscribeRoles();
+      if (unsubscribeFeatures) unsubscribeFeatures();
+    };
+  }, [currentPage, filters]);
+
+  // Initialize default features if collection is empty
+  const initializeDefaultFeatures = async () => {
     try {
-      const response = await fetch(url, defaultOptions);
-      
-      // Check if response is HTML (error page)
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('text/html')) {
-        throw new Error('Server returned HTML instead of JSON. Endpoint may not exist.');
+      const db = await getFirestore();
+      const featuresSnapshot = await getDocs(collection(db, 'features'));
+      if (featuresSnapshot.empty) {
+        const defaultFeatures = getDefaultFeatures();
+        const batch = writeBatch(db);
+        
+        defaultFeatures.forEach(feature => {
+          const featureRef = doc(collection(db, 'features'));
+          batch.set(featureRef, {
+            ...feature,
+            created_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          });
+        });
+        
+        await batch.commit();
+        console.log('Default features initialized');
       }
-
-      if (!response.ok) {
-        // Try to parse error response as JSON
-        let errorMessage = `HTTP error! status: ${response.status}`;
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.message || errorMessage;
-        } catch {
-          // If not JSON, use status text
-          errorMessage = response.statusText || errorMessage;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const data: ApiResponse<T> = await response.json();
-      return data;
-
-    } catch (err: any) {
-      console.error(`API call failed for ${url}:`, err);
-      throw new Error(err.message || 'فشل في الاتصال بالخادم');
+    } catch (error) {
+      console.error('Error initializing default features:', error);
     }
   };
 
-  // Fetch roles with security integration
-  const fetchRoles = useCallback(async () => {
+  // Initialize default system roles if collection is empty
+  const initializeDefaultRoles = async () => {
     try {
-      setLoading(true);
-      setError('');
-
-      const queryParams = new URLSearchParams({
-        page: currentPage.toString(),
-        limit: rolesPerPage.toString(),
-        ...(filters.search && { search: filters.search }),
-        ...(filters.isSystemRole && { is_system_role: filters.isSystemRole }),
-        ...(filters.securityLevel && { security_level: filters.securityLevel }),
-        ...(filters.mfaRequired && { mfa_required: filters.mfaRequired })
-      });
-
-      const response = await apiCall<RolesResponse>(`/api/superadmin/roles?${queryParams}`);
-      
-      if (response.success && response.data) {
-        setRoles(response.data.roles || []);
-        setTotalPages(response.data.total_pages || 1);
-        setTotalCount(response.data.total_count || 0);
-        setSuccess(`تم تحميل ${response.data.roles?.length || 0} دور`);
-      } else {
-        throw new Error(response.message || 'فشل في تحميل الأدوار');
+      const db = await getFirestore();
+      const rolesSnapshot = await getDocs(collection(db, 'roles'));
+      if (rolesSnapshot.empty) {
+        const defaultRoles = getDefaultRoles();
+        const batch = writeBatch(db);
+        
+        defaultRoles.forEach(role => {
+          const roleRef = doc(collection(db, 'roles'));
+          batch.set(roleRef, {
+            ...role,
+            created_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          });
+        });
+        
+        await batch.commit();
+        console.log('Default roles initialized');
       }
-
-    } catch (err: any) {
-      const errorMsg = err.message || 'حدث خطأ أثناء تحميل الأدوار';
-      setError(errorMsg);
-      console.error('Failed to load roles:', err);
-    } finally {
-      setLoading(false);
+    } catch (error) {
+      console.error('Error initializing default roles:', error);
     }
-  }, [currentPage, filters]);
+  };
 
-  const fetchFeatures = useCallback(async () => {
-    try {
-      const response = await apiCall<{ features: Feature[] }>('/api/superadmin/features');
-      
-      if (response.success && response.data) {
-        setFeatures(response.data.features || []);
-      } else {
-        throw new Error(response.message || 'فشل في تحميل الميزات');
-      }
-    } catch (err: any) {
-      console.error('Failed to load features:', err);
-      // Don't show error to user for features loading as it's not critical
-    }
-  }, []);
-
+  // Initialize data on component mount
   useEffect(() => {
-    fetchRoles();
-    fetchFeatures();
-  }, [fetchRoles, fetchFeatures]);
+    initializeDefaultFeatures();
+    initializeDefaultRoles();
+  }, []);
 
   const logSecurityEvent = async (eventType: string, description: string, success: boolean) => {
     try {
-      await apiCall('/api/security/log', {
-        method: 'POST',
-        body: JSON.stringify({
-          event_type: eventType,
-          event_description: description,
-          success,
-          severity: success ? 'INFO' : 'ERROR',
-          details: { 
-            component: 'RoleManagement',
-            filters: filters,
-            page: currentPage
-          }
-        })
+      const db = await getFirestore();
+      await addDoc(collection(db, 'security_logs'), {
+        event_type: eventType,
+        event_description: description,
+        success,
+        severity: success ? 'INFO' : 'ERROR',
+        user_id: 'current-user',
+        user_email: 'admin@system.com',
+        component: 'RoleManagement',
+        details: { 
+          filters: filters,
+          page: currentPage
+        },
+        timestamp: serverTimestamp()
       });
     } catch (error) {
-      // Silently fail for security logging - don't show errors to user
       console.warn('Failed to log security event:', error);
     }
   };
@@ -263,34 +325,88 @@ const RoleManagement: React.FC = () => {
         return;
       }
 
-      const response = await apiCall<{ role: Role }>('/api/superadmin/roles', {
-        method: 'POST',
-        body: JSON.stringify(newRole)
-      });
+      const db = await getFirestore();
 
-      if (response.success) {
-        setSuccess('تم إنشاء الدور بنجاح');
-        setNewRole({
-          name: '',
-          description: '',
-          security_level: 5,
-          max_session_hours: 8,
-          password_policy: 'STANDARD',
-          mfa_required: false
-        });
-        setIsCreateModalOpen(false);
-        fetchRoles();
-
-        await logSecurityEvent('ROLE_CREATE', `تم إنشاء الدور: ${newRole.name}`, true);
-      } else {
-        throw new Error(response.message || 'فشل في إنشاء الدور');
+      // Check if role name already exists
+      const existingRoleQuery = query(
+        collection(db, 'roles'), 
+        where('name', '==', newRole.name.trim())
+      );
+      const existingRoleSnapshot = await getDocs(existingRoleQuery);
+      
+      if (!existingRoleSnapshot.empty) {
+        setError('اسم الدور موجود مسبقاً');
+        return;
       }
 
+      const roleData = {
+        ...newRole,
+        name: newRole.name.trim(),
+        description: newRole.description.trim(),
+        uuid: generateUUID(),
+        is_system_role: false,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+        created_by: 'system',
+        user_count: 0
+      };
+
+      const docRef = await addDoc(collection(db, 'roles'), roleData);
+      
+      // Create default permissions for the new role
+      await createDefaultPermissions(docRef.id);
+      
+      setSuccess('تم إنشاء الدور بنجاح');
+      setNewRole({
+        name: '',
+        description: '',
+        security_level: 5,
+        max_session_hours: 8,
+        password_policy: 'STANDARD',
+        mfa_required: false
+      });
+      setIsCreateModalOpen(false);
+
+      await logSecurityEvent('ROLE_CREATE', `تم إنشاء الدور: ${newRole.name}`, true);
+
     } catch (err: any) {
+      console.error('Error creating role:', err);
       setError(err.message || 'فشل في إنشاء الدور');
       await logSecurityEvent('ROLE_CREATE', `فشل إنشاء الدور: ${err.message}`, false);
     } finally {
       setProcessing(false);
+    }
+  };
+
+  const createDefaultPermissions = async (roleId: string) => {
+    try {
+      const db = await getFirestore();
+      const featuresSnapshot = await getDocs(collection(db, 'features'));
+      const batch = writeBatch(db);
+      
+      featuresSnapshot.forEach((featureDoc) => {
+        const feature = featureDoc.data() as Feature;
+        const permissionRef = doc(collection(db, 'role_permissions'));
+        batch.set(permissionRef, {
+          role_id: roleId,
+          feature_id: featureDoc.id,
+          can_view: feature.enabled_by_default,
+          can_create: false,
+          can_edit: false,
+          can_delete: false,
+          can_export: false,
+          can_approve: false,
+          view_scope: 'NONE',
+          edit_scope: 'NONE',
+          export_scope: 'NONE',
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+      });
+
+      await batch.commit();
+    } catch (error) {
+      console.error('Failed to create default permissions:', error);
     }
   };
 
@@ -306,23 +422,40 @@ const RoleManagement: React.FC = () => {
         return;
       }
 
-      const response = await apiCall<{ role: Role }>(`/api/superadmin/roles/${selectedRole.id}`, {
-        method: 'PUT',
-        body: JSON.stringify(editRole)
-      });
+      const db = await getFirestore();
 
-      if (response.success) {
-        setSuccess('تم تحديث الدور بنجاح');
-        setIsEditModalOpen(false);
-        setSelectedRole(null);
-        fetchRoles();
-
-        await logSecurityEvent('ROLE_UPDATE', `تم تحديث الدور: ${editRole.name}`, true);
-      } else {
-        throw new Error(response.message || 'فشل في تحديث الدور');
+      // Check if role name already exists (excluding current role)
+      const existingRoleQuery = query(
+        collection(db, 'roles'), 
+        where('name', '==', editRole.name.trim())
+      );
+      const existingRoleSnapshot = await getDocs(existingRoleQuery);
+      
+      const existingRole = existingRoleSnapshot.docs.find(doc => doc.id !== selectedRole.id);
+      if (existingRole) {
+        setError('اسم الدور موجود مسبقاً');
+        return;
       }
 
+      const roleRef = doc(db, 'roles', selectedRole.id);
+      await updateDoc(roleRef, {
+        name: editRole.name.trim(),
+        description: editRole.description.trim(),
+        security_level: editRole.security_level,
+        max_session_hours: editRole.max_session_hours,
+        password_policy: editRole.password_policy,
+        mfa_required: editRole.mfa_required,
+        updated_at: serverTimestamp()
+      });
+
+      setSuccess('تم تحديث الدور بنجاح');
+      setIsEditModalOpen(false);
+      setSelectedRole(null);
+
+      await logSecurityEvent('ROLE_UPDATE', `تم تحديث الدور: ${editRole.name}`, true);
+
     } catch (err: any) {
+      console.error('Error updating role:', err);
       setError(err.message || 'فشل في تحديث الدور');
       await logSecurityEvent('ROLE_UPDATE', `فشل تحديث الدور: ${err.message}`, false);
     } finally {
@@ -340,18 +473,44 @@ const RoleManagement: React.FC = () => {
     setLoading(true);
     
     try {
-      const response = await apiCall<{ permissions: RolePermission[] }>(`/api/superadmin/roles/${role.id}/permissions`);
+      const db = await getFirestore();
+      const q = query(
+        collection(db, 'role_permissions'), 
+        where('role_id', '==', role.id)
+      );
       
-      if (response.success && response.data) {
-        setRolePermissions(response.data.permissions || []);
-        setIsPermissionModalOpen(true);
-        setError('');
-        await logSecurityEvent('ROLE_PERMISSIONS_VIEW', `عرض صلاحيات الدور: ${role.name}`, true);
-      } else {
-        throw new Error(response.message || 'فشل في تحميل الصلاحيات');
+      const querySnapshot = await getDocs(q);
+      const permissionsData: RolePermission[] = [];
+      
+      for (const permissionDoc of querySnapshot.docs) {
+        const permissionData = permissionDoc.data();
+        let feature: Feature | undefined;
+        
+        // Fetch feature details
+        if (permissionData.feature_id) {
+          const featureDoc = await getDoc(doc(db, 'features', permissionData.feature_id));
+          if (featureDoc.exists()) {
+            feature = {
+              id: featureDoc.id,
+              ...featureDoc.data()
+            } as Feature;
+          }
+        }
+
+        permissionsData.push({
+          id: permissionDoc.id,
+          ...permissionData,
+          feature
+        } as RolePermission);
       }
 
+      setRolePermissions(permissionsData);
+      setIsPermissionModalOpen(true);
+      setError('');
+      await logSecurityEvent('ROLE_PERMISSIONS_VIEW', `عرض صلاحيات الدور: ${role.name}`, true);
+
     } catch (err: any) {
+      console.error('Error loading permissions:', err);
       setError(err.message || 'فشل في تحميل الصلاحيات');
       await logSecurityEvent('ROLE_PERMISSIONS_VIEW', `فشل تحميل الصلاحيات: ${err.message}`, false);
     } finally {
@@ -359,7 +518,7 @@ const RoleManagement: React.FC = () => {
     }
   };
 
-  const handleUpdatePermission = (permissionId: number, field: keyof RolePermission, value: any) => {
+  const handleUpdatePermission = (permissionId: string, field: keyof RolePermission, value: any) => {
     setRolePermissions(prev =>
       prev.map(perm =>
         perm.id === permissionId ? { ...perm, [field]: value } : perm
@@ -374,25 +533,36 @@ const RoleManagement: React.FC = () => {
       setProcessing(true);
       setError('');
 
-      const response = await apiCall(`/api/superadmin/roles/${selectedRole.id}/permissions`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          permissions: rolePermissions
-        })
+      const db = await getFirestore();
+      const batch = writeBatch(db);
+      
+      rolePermissions.forEach(permission => {
+        const permissionRef = doc(db, 'role_permissions', permission.id);
+        batch.update(permissionRef, {
+          can_view: permission.can_view,
+          can_create: permission.can_create,
+          can_edit: permission.can_edit,
+          can_delete: permission.can_delete,
+          can_export: permission.can_export,
+          can_approve: permission.can_approve,
+          view_scope: permission.view_scope,
+          edit_scope: permission.edit_scope,
+          export_scope: permission.export_scope,
+          updated_at: serverTimestamp()
+        });
       });
 
-      if (response.success) {
-        setSuccess('تم تحديث الصلاحيات بنجاح');
-        setIsPermissionModalOpen(false);
-        setSelectedRole(null);
-        setRolePermissions([]);
+      await batch.commit();
 
-        await logSecurityEvent('ROLE_PERMISSIONS_UPDATE', `تم تحديث صلاحيات الدور: ${selectedRole.name}`, true);
-      } else {
-        throw new Error(response.message || 'فشل في تحديث الصلاحيات');
-      }
+      setSuccess('تم تحديث الصلاحيات بنجاح');
+      setIsPermissionModalOpen(false);
+      setSelectedRole(null);
+      setRolePermissions([]);
+
+      await logSecurityEvent('ROLE_PERMISSIONS_UPDATE', `تم تحديث صلاحيات الدور: ${selectedRole.name}`, true);
 
     } catch (err: any) {
+      console.error('Error updating permissions:', err);
       setError(err.message || 'فشل في تحديث الصلاحيات');
       await logSecurityEvent('ROLE_PERMISSIONS_UPDATE', `فشل تحديث الصلاحيات: ${err.message}`, false);
     } finally {
@@ -412,22 +582,33 @@ const RoleManagement: React.FC = () => {
         return;
       }
 
-      const response = await apiCall(`/api/superadmin/roles/${selectedRole.id}`, {
-        method: 'DELETE'
+      const db = await getFirestore();
+
+      // Delete role permissions first
+      const permissionsQuery = query(
+        collection(db, 'role_permissions'), 
+        where('role_id', '==', selectedRole.id)
+      );
+      const permissionsSnapshot = await getDocs(permissionsQuery);
+      
+      const batch = writeBatch(db);
+      permissionsSnapshot.forEach((doc) => {
+        batch.delete(doc.ref);
       });
+      
+      // Delete the role
+      batch.delete(doc(db, 'roles', selectedRole.id));
+      
+      await batch.commit();
 
-      if (response.success) {
-        setSuccess('تم حذف الدور بنجاح');
-        setIsDeleteModalOpen(false);
-        setSelectedRole(null);
-        fetchRoles();
+      setSuccess('تم حذف الدور بنجاح');
+      setIsDeleteModalOpen(false);
+      setSelectedRole(null);
 
-        await logSecurityEvent('ROLE_DELETE', `تم حذف الدور: ${selectedRole.name}`, true);
-      } else {
-        throw new Error(response.message || 'فشل في حذف الدور');
-      }
+      await logSecurityEvent('ROLE_DELETE', `تم حذف الدور: ${selectedRole.name}`, true);
 
     } catch (err: any) {
+      console.error('Error deleting role:', err);
       setError(err.message || 'فشل في حذف الدور');
       await logSecurityEvent('ROLE_DELETE', `فشل حذف الدور: ${err.message}`, false);
     } finally {
@@ -473,6 +654,118 @@ const RoleManagement: React.FC = () => {
     setIsEditModalOpen(true);
   };
 
+  // Helper functions
+  const generateUUID = () => {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c == 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  };
+
+  const getDefaultFeatures = (): Omit<Feature, 'id'>[] => [
+    {
+      uuid: generateUUID(),
+      feature_code: 'ROLE_MANAGEMENT',
+      feature_name: 'إدارة الأدوار',
+      feature_description: 'إدارة أدوار النظام والصلاحيات',
+      category: 'SYSTEM',
+      is_system_critical: true,
+      requires_super_admin: true,
+      requires_mfa: true,
+      enabled_by_default: true
+    },
+    {
+      uuid: generateUUID(),
+      feature_code: 'USER_MANAGEMENT',
+      feature_name: 'إدارة المستخدمين',
+      feature_description: 'إدارة حسابات المستخدمين',
+      category: 'SYSTEM',
+      is_system_critical: true,
+      requires_super_admin: false,
+      requires_mfa: false,
+      enabled_by_default: true
+    },
+    {
+      uuid: generateUUID(),
+      feature_code: 'INVENTORY_VIEW',
+      feature_name: 'عرض المخزون',
+      feature_description: 'عرض عناصر المخزون',
+      category: 'INVENTORY',
+      is_system_critical: false,
+      requires_super_admin: false,
+      requires_mfa: false,
+      enabled_by_default: true
+    },
+    {
+      uuid: generateUUID(),
+      feature_code: 'INVENTORY_MANAGE',
+      feature_name: 'إدارة المخزون',
+      feature_description: 'إضافة وتعديل وحذف عناصر المخزون',
+      category: 'INVENTORY',
+      is_system_critical: false,
+      requires_super_admin: false,
+      requires_mfa: false,
+      enabled_by_default: false
+    },
+    {
+      uuid: generateUUID(),
+      feature_code: 'REPORTS_VIEW',
+      feature_name: 'عرض التقارير',
+      feature_description: 'عرض تقارير النظام',
+      category: 'REPORTS',
+      is_system_critical: false,
+      requires_super_admin: false,
+      requires_mfa: false,
+      enabled_by_default: true
+    }
+  ];
+
+  const getDefaultRoles = (): Omit<Role, 'id'>[] => [
+    {
+      uuid: generateUUID(),
+      name: 'مدير النظام',
+      description: 'صلاحيات كاملة للنظام',
+      security_level: 10,
+      is_system_role: true,
+      max_session_hours: 8,
+      password_policy: 'STRONG',
+      mfa_required: true,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+      created_by: 'system',
+      user_count: 1
+    },
+    {
+      uuid: generateUUID(),
+      name: 'مشرف',
+      description: 'صلاحيات إشرافية',
+      security_level: 7,
+      is_system_role: false,
+      max_session_hours: 8,
+      password_policy: 'STANDARD',
+      mfa_required: false,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+      created_by: 'system',
+      user_count: 0
+    },
+    {
+      uuid: generateUUID(),
+      name: 'مستخدم عادي',
+      description: 'صلاحيات أساسية',
+      security_level: 3,
+      is_system_role: false,
+      max_session_hours: 8,
+      password_policy: 'STANDARD',
+      mfa_required: false,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+      created_by: 'system',
+      user_count: 0
+    }
+  ];
+
   const getPasswordPolicyLabel = (policy: string): string => {
     const policyMap: { [key: string]: string } = {
       'STANDARD': 'قياسي',
@@ -492,15 +785,29 @@ const RoleManagement: React.FC = () => {
     return scopeMap[scope] || scope;
   };
 
-  const formatDateTime = (dateString: string): string => {
-    const date = new Date(dateString);
-    return date.toLocaleString('ar-EG', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+  const formatDateTime = (date: any): string => {
+    if (!date) return 'غير محدد';
+    
+    try {
+      let dateObj;
+      if (date.toDate) {
+        dateObj = date.toDate();
+      } else if (date.seconds) {
+        dateObj = new Date(date.seconds * 1000);
+      } else {
+        dateObj = new Date(date);
+      }
+      
+      return dateObj.toLocaleString('ar-EG', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return 'غير محدد';
+    }
   };
 
   const getSecurityLevelColor = (level: number): string => {
@@ -509,48 +816,6 @@ const RoleManagement: React.FC = () => {
     if (level <= 8) return 'text-orange-600 bg-orange-100 dark:bg-orange-900/20 dark:text-orange-300';
     return 'text-red-600 bg-red-100 dark:bg-red-900/20 dark:text-red-300';
   };
-
-  // Initialize default features if not loaded
-  const getDefaultFeatures = (): Feature[] => [
-    {
-      id: 1,
-      uuid: 'default-feature-1',
-      feature_code: 'ROLE_MANAGEMENT',
-      feature_name: 'إدارة الأدوار',
-      feature_description: 'إدارة أدوار النظام والصلاحيات',
-      category: 'SYSTEM',
-      is_system_critical: true,
-      requires_super_admin: true,
-      requires_mfa: true,
-      enabled_by_default: true
-    },
-    {
-      id: 2,
-      uuid: 'default-feature-2',
-      feature_code: 'USER_MANAGEMENT',
-      feature_name: 'إدارة المستخدمين',
-      feature_description: 'إدارة حسابات المستخدمين',
-      category: 'SYSTEM',
-      is_system_critical: true,
-      requires_super_admin: false,
-      requires_mfa: false,
-      enabled_by_default: true
-    },
-    {
-      id: 3,
-      uuid: 'default-feature-3',
-      feature_code: 'INVENTORY_VIEW',
-      feature_name: 'عرض المخزون',
-      feature_description: 'عرض عناصر المخزون',
-      category: 'INVENTORY',
-      is_system_critical: false,
-      requires_super_admin: false,
-      requires_mfa: false,
-      enabled_by_default: true
-    }
-  ];
-
-  const effectiveFeatures = features.length > 0 ? features : getDefaultFeatures();
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6" dir="rtl">
@@ -1382,7 +1647,7 @@ const RoleManagement: React.FC = () => {
                 ) : (
                   <div className="space-y-4">
                     {rolePermissions.map((permission) => {
-                      const feature = effectiveFeatures.find(f => f.id === permission.feature_id);
+                      const feature = permission.feature;
                       if (!feature) return null;
 
                       return (

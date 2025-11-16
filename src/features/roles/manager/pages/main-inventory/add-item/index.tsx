@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Save, CheckCircle, XCircle, Search, ChevronLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTable, Column } from 'react-table';
+import { CloudFunctionsService } from '@/services/firebase';
 import axios from 'axios';
 
 interface ArabicItem {
@@ -92,6 +93,7 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
   const [isLoading, setIsLoading] = useState(false);
   const [isMobileView, setIsMobileView] = useState(window.innerWidth < 768);
   const [activeTab, setActiveTab] = useState<'form' | 'table'>('form');
+  const [useFirebase, setUseFirebase] = useState(true);
 
   const API_URL = import.meta.env.VITE_API_URL;
   const dateColumn = isMonofya ? 'تاريخ_الإدخال' : 'تاريخ_الاضافه';
@@ -117,37 +119,61 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
     }
   }, [formData.cartons, formData.perCarton, formData.individual]);
 
-  // Search items every time name/code/color changes
-  useEffect(() => {
-    if (formData.name && formData.code && formData.color) {
-      searchItems(formData.name, formData.code, formData.color);
-    }
-    // eslint-disable-next-line
-  }, [formData.name, formData.code, formData.color]);
-
-  // Backend search (use Arabic keys in body)
+  // Firebase search function with fallback
   const searchItems = useCallback(
     async (name = '', code = '', color = '') => {
       setIsLoading(true);
       try {
-        // Use /manager/main-inventory/search for all inventory
-        const params = new URLSearchParams();
-        if (name) params.append('name', name || searchQuery || '%');
-        if (code) params.append('code', code || searchQuery || '%');
-        if (color) params.append('color', color || searchQuery || '%');
-        // Filter fallback
-        const url = `${API_URL}/manager/main-inventory/search?${params.toString()}`;
-        const response = await axios.get(url);
-        setItems(
-          (Array.isArray(response.data) ? response.data : []).map((item: ArabicItem) => mapFromArabic(item, isMonofya))
-        );
+        const searchData = {
+          name: name || searchQuery || '%',
+          code: code || searchQuery || '%',
+          color: color || searchQuery || '%',
+          isMonofya: isMonofya
+        };
+
+        let result: any[] = [];
+
+        // Try Firebase first, fallback to direct API
+        if (useFirebase) {
+          try {
+            console.log('🔧 Trying Firebase Cloud Function...');
+            result = await CloudFunctionsService.callFunction('searchInventory', searchData);
+            console.log('✅ Firebase search successful');
+          } catch (firebaseError) {
+            console.warn('❌ Firebase failed, falling back to direct API:', firebaseError);
+            setUseFirebase(false);
+            throw firebaseError; // Trigger fallback
+          }
+        }
+
+        // If Firebase is disabled or failed, use direct API
+        if (!useFirebase) {
+          console.log('🔧 Using direct API call...');
+          const params = new URLSearchParams();
+          if (name) params.append('name', name || searchQuery || '%');
+          if (code) params.append('code', code || searchQuery || '%');
+          if (color) params.append('color', color || searchQuery || '%');
+          
+          const url = `${API_URL}/manager/main-inventory/search?${params.toString()}`;
+          const response = await axios.get(url);
+          result = Array.isArray(response.data) ? response.data : [];
+        }
+
+        setItems(result.map((item: ArabicItem) => mapFromArabic(item, isMonofya)));
       } catch (err: any) {
-        toast.error('حدث خطأ أثناء البحث', { description: err.message });
+        console.error('Search error:', err);
+        
+        // Don't show error toast for initial load, only for user-initiated searches
+        if (name || code || color || searchQuery) {
+          toast.error('حدث خطأ أثناء البحث', { 
+            description: err.message || 'فشل في جلب البيانات من الخادم' 
+          });
+        }
       } finally {
         setIsLoading(false);
       }
     },
-    [searchQuery, API_URL, isMonofya]
+    [searchQuery, isMonofya, useFirebase, API_URL]
   );
 
   useEffect(() => {
@@ -197,44 +223,87 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
 
   const saveProduct = async (closeAfter: boolean) => {
     const { name, code, color, cartons, perCarton, individual, supplier, location, notes } = formData;
+    
     if (!name || !code || !color) {
       toast.error('يجب إدخال الصنف والكود واللون.');
       return;
     }
+
     try {
       const cartonsNum = parseInt(normalizeArabicNumber(cartons)) || 0;
       const perCartonNum = parseInt(normalizeArabicNumber(perCarton));
       const individualNum = parseInt(normalizeArabicNumber(individual)) || 0;
-      const now = new Date().toISOString().split('T')[0];
 
       if (!perCartonNum) {
         toast.error('عدد في الكرتونة مطلوب عند إضافة صنف جديد.');
         return;
       }
 
-      const payload: any = {
-        "الصنف": name,
-        "الكود": code,
-        "اللون": color,
-        "عدد_الكراتين": cartonsNum,
-        "عدد_في_الكرتونة": perCartonNum,
-        "عدد_القزاز_الفردي": individualNum,
-        "المورد": supplier || null,
-        "مكان_الصنف": location || null,
-        "ملاحظات": notes || null,
-        "تاريخ_الاضافه": now
-      };
+      const now = new Date().toISOString().split('T')[0];
 
-      await axios.post(`${API_URL}/manager/main-inventory/`, payload);
+      if (useFirebase) {
+        // Firebase Cloud Function approach
+        const itemData = {
+          name,
+          code,
+          color,
+          cartons: cartonsNum,
+          perCarton: perCartonNum,
+          individual: individualNum,
+          supplier: supplier || null,
+          location: location || null,
+          notes: notes || null,
+          isMonofya: isMonofya
+        };
+
+        console.log('Saving item data via Firebase:', itemData);
+        await CloudFunctionsService.upsertItem(itemData);
+      } else {
+        // Direct API approach
+        const payload: any = {
+          "الصنف": name,
+          "الكود": code,
+          "اللون": color,
+          "عدد_الكراتين": cartonsNum,
+          "عدد_في_الكرتونة": perCartonNum,
+          "عدد_القزاز_الفردي": individualNum,
+          "المورد": supplier || null,
+          "مكان_الصنف": location || null,
+          "ملاحظات": notes || null,
+          "تاريخ_الاضافه": now
+        };
+
+        console.log('Saving item data via direct API:', payload);
+        await axios.post(`${API_URL}/manager/main-inventory/`, payload);
+      }
 
       toast.success(
         isMonofya ? 'تم حفظ الصنف في مخزون المنوفية بنجاح.' : 'تم حفظ الصنف بنجاح.'
       );
 
-      if (closeAfter) navigate(-1);
-      else clearFields();
+      // Refresh the items list to show the new item
+      searchItems();
+
+      if (closeAfter) {
+        navigate(-1);
+      } else {
+        clearFields();
+      }
     } catch (err: any) {
-      toast.error('حدث خطأ أثناء الحفظ', { description: err.message });
+      console.error('Save error:', err);
+      
+      // If Firebase fails, switch to direct API and retry
+      if (useFirebase && err.message?.includes('internal')) {
+        console.log('🔄 Firebase save failed, switching to direct API and retrying...');
+        setUseFirebase(false);
+        // Retry with direct API
+        setTimeout(() => saveProduct(closeAfter), 100);
+        return;
+      }
+      
+      toast.error('حدث خطأ أثناء الحفظ', { 
+        description: err.message || 'فشل في حفظ البيانات' 
+      });
     }
   };
 
@@ -301,12 +370,17 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
           </div>
         )}
 
-        <button 
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-1 text-sm bg-gray-200 dark:bg-gray-700 px-3 py-1 rounded-lg ml-auto"
-        >
-          <ChevronLeft size={16} /> رجوع
-        </button>
+        <div className="flex items-center gap-2 ml-auto">
+          <div className="text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
+            {useFirebase ? '🔧 Firebase' : '🌐 Direct API'}
+          </div>
+          <button 
+            onClick={() => navigate(-1)}
+            className="flex items-center gap-1 text-sm bg-gray-200 dark:bg-gray-700 px-3 py-1 rounded-lg"
+          >
+            <ChevronLeft size={16} /> رجوع
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col md:flex-row gap-3 max-w-[1920px] mx-auto w-full">
@@ -355,23 +429,26 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => saveProduct(false)}
-                className="flex items-center gap-1 px-3 py-2 bg-blue-600 text-white rounded-lg shadow text-xs sm:text-sm"
+                disabled={isLoading}
+                className="flex items-center gap-1 px-3 py-2 bg-blue-600 text-white rounded-lg shadow text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Save size={14} /> حفظ
+                <Save size={14} /> {isLoading ? 'جاري الحفظ...' : 'حفظ'}
               </motion.button>
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => saveProduct(true)}
-                className="flex items-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg shadow text-xs sm:text-sm"
+                disabled={isLoading}
+                className="flex items-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg shadow text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <CheckCircle size={14} /> حفظ وإغلاق
+                <CheckCircle size={14} /> {isLoading ? 'جاري الحفظ...' : 'حفظ وإغلاق'}
               </motion.button>
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={clearFields}
-                className="flex items-center gap-1 px-3 py-2 bg-red-600 text-white rounded-lg shadow text-xs sm:text-sm"
+                disabled={isLoading}
+                className="flex items-center gap-1 px-3 py-2 bg-red-600 text-white rounded-lg shadow text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <XCircle size={14} /> إلغاء
               </motion.button>
@@ -412,16 +489,20 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
                 >
                   <thead className="bg-gray-100 dark:bg-gray-700 sticky top-0 z-10">
                     {headerGroups.map((headerGroup) => (
-                      <tr {...headerGroup.getHeaderGroupProps()}>
-                        {headerGroup.headers.map((column) => (
-                          <th
-                            {...column.getHeaderProps()}
-                            className="p-2 text-sm font-bold border-b border-gray-200 dark:border-gray-600 text-center bg-gray-100 dark:bg-gray-700"
-                            style={{ minWidth: column.width }}
-                          >
-                            {column.render('Header')}
-                          </th>
-                        ))}
+                      <tr key={headerGroup.getHeaderGroupProps().key}>
+                        {headerGroup.headers.map((column) => {
+                          const { key, ...headerProps } = column.getHeaderProps();
+                          return (
+                            <th
+                              key={key}
+                              {...headerProps}
+                              className="p-2 text-sm font-bold border-b border-gray-200 dark:border-gray-600 text-center bg-gray-100 dark:bg-gray-700"
+                              style={{ minWidth: (column as any).width }}
+                            >
+                              {column.render('Header')}
+                            </th>
+                          );
+                        })}
                       </tr>
                     ))}
                   </thead>
@@ -441,20 +522,26 @@ const AddItemPage: React.FC<AddItemPageProps> = ({ isMonofya = false, isSidebarC
                     ) : (
                       rows.map((row) => {
                         prepareRow(row);
+                        const { key, ...rowProps } = row.getRowProps();
                         return (
                           <tr
-                            {...row.getRowProps()}
+                            key={key}
+                            {...rowProps}
                             onClick={() => handleRowSelect(row.original)}
                             className="border-b border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
                           >
-                            {row.cells.map((cell) => (
-                              <td
-                                {...cell.getCellProps()}
-                                className="p-2 text-center text-sm"
-                              >
-                                {cell.render('Cell')}
-                              </td>
-                            ))}
+                            {row.cells.map((cell) => {
+                              const { key: cellKey, ...cellProps } = cell.getCellProps();
+                              return (
+                                <td
+                                  key={cellKey}
+                                  {...cellProps}
+                                  className="p-2 text-center text-sm"
+                                >
+                                  {cell.render('Cell')}
+                                </td>
+                              );
+                            })}
                           </tr>
                         );
                       })

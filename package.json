@@ -38,10 +38,12 @@
     "chart.js": "4.4.9",
     "class-variance-authority": "0.7.1",
     "clsx": "^2.1.1",
+    "cors": "^2.8.5",
     "crypto-js": "4.2.0",
     "date-fns": "^4.1.0",
     "dompurify": "^3.2.6",
     "file-saver": "^2.0.5",
+    "firebase": "^12.5.0",
     "framer-motion": "10.18.0",
     "html2canvas": "1.4.1",
     "html2pdf.js": "0.10.3",
@@ -75,12 +77,13 @@
     "tailwindcss-rtl": "0.9.0",
     "use-sync-external-store": "^1.2.0",
     "uuid": "9.0.1",
-    "vite-plugin-pwa": "1.0.0",
     "xlsx": "^0.18.5",
     "zod": "^4.1.12",
     "zustand": "^4.3.8"
   },
   "devDependencies": {
+    "@babel/preset-react": "^7.28.5",
+    "@babel/preset-typescript": "^7.28.5",
     "@testing-library/jest-dom": "6.1.4",
     "@testing-library/react": "14.2.1",
     "@testing-library/user-event": "14.5.1",
@@ -100,6 +103,7 @@
     "tailwindcss": "3.4.1",
     "typescript": "5.3.3",
     "vite": "^6.3.5",
+    "vite-plugin-pwa": "^1.1.0",
     "vitest": "^3.2.3"
   },
   "eslintConfig": {
@@ -139,5 +143,18 @@
     "tinyglobby": {
       "picomatch": "2.3.1"
     }
-  }
+  },
+  "description": "This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.",
+  "main": "convert-font-to-base64.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbdelrahimAdam/inventory-system.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AbdelrahimAdam/inventory-system/issues"
+  },
+  "homepage": "https://github.com/AbdelrahimAdam/inventory-system#readme"
 }

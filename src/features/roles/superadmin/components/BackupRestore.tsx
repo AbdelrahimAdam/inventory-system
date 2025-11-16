@@ -1,108 +1,236 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
-  CloudUpload, 
-  CloudDownload, 
+  Upload, 
+  Download, 
   Database, 
   Shield, 
   Clock,
   AlertTriangle,
   CheckCircle2,
-  Download,
-  Upload,
   HardDrive,
-  Server
+  Server,
+  History,
+  RefreshCw
 } from 'lucide-react';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  getDoc,
+  writeBatch,
+  query,
+  orderBy,
+  where,
+  Timestamp 
+} from 'firebase/firestore';
+import { db, storage } from '@/services/firebase';
+import { ref, uploadBytes, getDownloadURL, listAll, deleteObject } from 'firebase/storage';
 
 interface BackupFile {
   id: string;
   filename: string;
-  size: string;
-  createdAt: string;
-  type: 'full' | 'partial';
-  database: 'perfume_inventory';
+  size: number;
+  createdAt: Timestamp;
+  type: 'full' | 'incremental';
+  collections: string[];
   status: 'completed' | 'failed' | 'in_progress';
+  downloadUrl?: string;
 }
 
 interface BackupStats {
   totalBackups: number;
-  lastBackup: string;
-  totalSize: string;
+  lastBackup: Timestamp | null;
+  totalSize: number;
   successRate: number;
 }
 
 const BackupRestore: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'backup' | 'restore'>('backup');
   const [backupType, setBackupType] = useState<'full' | 'incremental'>('full');
-  const [includeData, setIncludeData] = useState(true);
-  const [includeSchema, setIncludeSchema] = useState(true);
-  const [includeUsers, setIncludeUsers] = useState(false);
+  const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
   const [selectedBackup, setSelectedBackup] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [backupFiles, setBackupFiles] = useState<BackupFile[]>([]);
+  const [backupStats, setBackupStats] = useState<BackupStats>({
+    totalBackups: 0,
+    lastBackup: null,
+    totalSize: 0,
+    successRate: 100
+  });
+  const [availableCollections, setAvailableCollections] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Mock data - replace with actual API calls
-  const backupFiles: BackupFile[] = [
-    {
-      id: '1',
-      filename: 'backup_2024_01_15_full.sql',
-      size: '2.4 GB',
-      createdAt: '2024-01-15 14:30:00',
-      type: 'full',
-      database: 'perfume_inventory',
-      status: 'completed'
-    },
-    {
-      id: '2',
-      filename: 'backup_2024_01_14_incremental.sql',
-      size: '450 MB',
-      createdAt: '2024-01-14 02:00:00',
-      type: 'partial',
-      database: 'perfume_inventory',
-      status: 'completed'
-    },
-    {
-      id: '3',
-      filename: 'backup_2024_01_13_full.sql',
-      size: '2.3 GB',
-      createdAt: '2024-01-13 02:00:00',
-      type: 'full',
-      database: 'perfume_inventory',
-      status: 'completed'
-    }
-  ];
+  // Load available collections and backup files
+  useEffect(() => {
+    loadAvailableCollections();
+    loadBackupFiles();
+  }, []);
 
-  const backupStats: BackupStats = {
-    totalBackups: 24,
-    lastBackup: '2024-01-15 14:30:00',
-    totalSize: '28.5 GB',
-    successRate: 98.2
+  const loadAvailableCollections = async () => {
+    try {
+      // Define the main collections you want to backup
+      const collections = [
+        'users',
+        'products', 
+        'categories',
+        'invoices',
+        'customers',
+        'suppliers',
+        'warehouseItems',
+        'settings'
+      ];
+      setAvailableCollections(collections);
+      setSelectedCollections(collections); // Select all by default
+    } catch (error) {
+      console.error('Error loading collections:', error);
+    }
   };
 
-  const handleBackup = async () => {
+  const loadBackupFiles = async () => {
+    try {
+      const backupsQuery = query(
+        collection(db, 'backups'),
+        orderBy('createdAt', 'desc')
+      );
+      const snapshot = await getDocs(backupsQuery);
+      
+      const files: BackupFile[] = [];
+      let totalSize = 0;
+      
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        files.push({
+          id: doc.id,
+          ...data
+        } as BackupFile);
+        totalSize += data.size || 0;
+      });
+
+      setBackupFiles(files);
+      
+      // Calculate stats
+      const stats: BackupStats = {
+        totalBackups: files.length,
+        lastBackup: files[0]?.createdAt || null,
+        totalSize,
+        successRate: files.filter(f => f.status === 'completed').length / files.length * 100
+      };
+      setBackupStats(stats);
+    } catch (error) {
+      console.error('Error loading backup files:', error);
+      setMessage({
+        type: 'error',
+        text: 'Failed to load backup files'
+      });
+    }
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const formatDate = (timestamp: Timestamp): string => {
+    return timestamp.toDate().toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const createBackup = async () => {
+    if (selectedCollections.length === 0) {
+      setMessage({
+        type: 'error',
+        text: 'Please select at least one collection to backup'
+      });
+      return;
+    }
+
     setIsLoading(true);
     setMessage(null);
-    
+
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const backupConfig = {
+      const backupId = `backup_${Date.now()}`;
+      const backupData: any = {
+        filename: `${backupId}.json`,
         type: backupType,
-        includeData,
-        includeSchema,
-        includeUsers,
-        database: 'perfume_inventory'
+        collections: selectedCollections,
+        status: 'in_progress',
+        createdAt: Timestamp.now(),
+        size: 0
       };
 
-      // Replace with actual backup API call
-      console.log('Backup configuration:', backupConfig);
+      // Create backup record
+      const backupRef = await addDoc(collection(db, 'backups'), backupData);
       
+      let totalSize = 0;
+      const backupContent: any = {
+        metadata: {
+          version: '1.0',
+          createdAt: new Date().toISOString(),
+          type: backupType,
+          collections: selectedCollections
+        },
+        data: {}
+      };
+
+      // Backup each selected collection
+      for (const collectionName of selectedCollections) {
+        try {
+          const snapshot = await getDocs(collection(db, collectionName));
+          const collectionData: any[] = [];
+          
+          snapshot.forEach(doc => {
+            collectionData.push({
+              id: doc.id,
+              ...doc.data()
+            });
+          });
+
+          backupContent.data[collectionName] = collectionData;
+          totalSize += JSON.stringify(collectionData).length;
+        } catch (error) {
+          console.error(`Error backing up collection ${collectionName}:`, error);
+        }
+      }
+
+      // Convert to JSON and create blob
+      const jsonContent = JSON.stringify(backupContent, null, 2);
+      const blob = new Blob([jsonContent], { type: 'application/json' });
+      
+      // Upload to Firebase Storage
+      const storageRef = ref(storage, `backups/${backupId}.json`);
+      await uploadBytes(storageRef, blob);
+      
+      // Get download URL
+      const downloadUrl = await getDownloadURL(storageRef);
+
+      // Update backup record with completed status
+      await addDoc(collection(db, 'backups'), {
+        ...backupData,
+        id: backupRef.id,
+        status: 'completed',
+        size: totalSize,
+        downloadUrl
+      });
+
       setMessage({
         type: 'success',
         text: `Backup completed successfully! ${backupType === 'full' ? 'Full' : 'Incremental'} backup created.`
       });
+
+      // Reload backup files
+      await loadBackupFiles();
     } catch (error) {
+      console.error('Backup error:', error);
       setMessage({
         type: 'error',
         text: 'Backup failed. Please try again.'
@@ -112,7 +240,7 @@ const BackupRestore: React.FC = () => {
     }
   };
 
-  const handleRestore = async () => {
+  const restoreBackup = async () => {
     if (!selectedBackup) {
       setMessage({
         type: 'error',
@@ -125,17 +253,39 @@ const BackupRestore: React.FC = () => {
     setMessage(null);
 
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // Replace with actual restore API call
-      console.log('Restoring backup:', selectedBackup);
-      
+      const backup = backupFiles.find(b => b.id === selectedBackup);
+      if (!backup?.downloadUrl) {
+        throw new Error('Backup file not found');
+      }
+
+      // Fetch backup data
+      const response = await fetch(backup.downloadUrl);
+      const backupContent = await response.json();
+
+      const batch = writeBatch(db);
+      let restoredCount = 0;
+
+      // Restore each collection
+      for (const [collectionName, documents] of Object.entries(backupContent.data)) {
+        if (Array.isArray(documents)) {
+          for (const docData of documents) {
+            const docRef = doc(db, collectionName, docData.id);
+            const { id, ...data } = docData;
+            batch.set(docRef, data);
+            restoredCount++;
+          }
+        }
+      }
+
+      // Commit the batch
+      await batch.commit();
+
       setMessage({
         type: 'success',
-        text: 'Database restored successfully from backup.'
+        text: `Database restored successfully! ${restoredCount} documents restored.`
       });
     } catch (error) {
+      console.error('Restore error:', error);
       setMessage({
         type: 'error',
         text: 'Restore failed. Please try again.'
@@ -145,15 +295,62 @@ const BackupRestore: React.FC = () => {
     }
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      // Handle file upload logic here
-      console.log('File selected:', file);
+    if (!file) return;
+
+    setIsLoading(true);
+    setMessage(null);
+
+    try {
+      // Validate file type
+      if (!file.name.endsWith('.json')) {
+        throw new Error('Only JSON files are supported');
+      }
+
+      // Read and validate backup file
+      const fileContent = await file.text();
+      const backupData = JSON.parse(fileContent);
+
+      if (!backupData.metadata || !backupData.data) {
+        throw new Error('Invalid backup file format');
+      }
+
+      // Upload to Firebase Storage
+      const backupId = `uploaded_${Date.now()}`;
+      const storageRef = ref(storage, `backups/${backupId}.json`);
+      await uploadBytes(storageRef, file);
+
+      const downloadUrl = await getDownloadURL(storageRef);
+
+      // Create backup record
+      await addDoc(collection(db, 'backups'), {
+        filename: file.name,
+        type: 'full',
+        collections: backupData.metadata.collections || [],
+        status: 'completed',
+        createdAt: Timestamp.now(),
+        size: file.size,
+        downloadUrl
+      });
+
       setMessage({
         type: 'success',
         text: `Backup file "${file.name}" uploaded successfully. Ready to restore.`
       });
+
+      await loadBackupFiles();
+    } catch (error) {
+      console.error('Upload error:', error);
+      setMessage({
+        type: 'error',
+        text: 'Upload failed. Please check the file format.'
+      });
+    } finally {
+      setIsLoading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -161,13 +358,51 @@ const BackupRestore: React.FC = () => {
     fileInputRef.current?.click();
   };
 
-  const downloadBackup = (backupId: string) => {
-    // Implement download logic
-    console.log('Downloading backup:', backupId);
-    setMessage({
-      type: 'success',
-      text: 'Backup download started.'
-    });
+  const downloadBackup = async (backupId: string) => {
+    try {
+      const backup = backupFiles.find(b => b.id === backupId);
+      if (!backup?.downloadUrl) {
+        throw new Error('Download URL not available');
+      }
+
+      const response = await fetch(backup.downloadUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = backup.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setMessage({
+        type: 'success',
+        text: 'Backup download started.'
+      });
+    } catch (error) {
+      console.error('Download error:', error);
+      setMessage({
+        type: 'error',
+        text: 'Download failed. Please try again.'
+      });
+    }
+  };
+
+  const toggleCollection = (collectionName: string) => {
+    setSelectedCollections(prev =>
+      prev.includes(collectionName)
+        ? prev.filter(c => c !== collectionName)
+        : [...prev, collectionName]
+    );
+  };
+
+  const selectAllCollections = () => {
+    setSelectedCollections([...availableCollections]);
+  };
+
+  const deselectAllCollections = () => {
+    setSelectedCollections([]);
   };
 
   return (
@@ -208,7 +443,7 @@ const BackupRestore: React.FC = () => {
               <div>
                 <p className="text-sm font-medium text-slate-600">Last Backup</p>
                 <p className="text-sm font-semibold text-slate-900">
-                  {new Date(backupStats.lastBackup).toLocaleDateString()}
+                  {backupStats.lastBackup ? formatDate(backupStats.lastBackup) : 'Never'}
                 </p>
               </div>
             </div>
@@ -221,7 +456,9 @@ const BackupRestore: React.FC = () => {
               </div>
               <div>
                 <p className="text-sm font-medium text-slate-600">Total Size</p>
-                <p className="text-sm font-semibold text-slate-900">{backupStats.totalSize}</p>
+                <p className="text-sm font-semibold text-slate-900">
+                  {formatFileSize(backupStats.totalSize)}
+                </p>
               </div>
             </div>
           </div>
@@ -233,7 +470,9 @@ const BackupRestore: React.FC = () => {
               </div>
               <div>
                 <p className="text-sm font-medium text-slate-600">Success Rate</p>
-                <p className="text-sm font-semibold text-slate-900">{backupStats.successRate}%</p>
+                <p className="text-sm font-semibold text-slate-900">
+                  {backupStats.successRate.toFixed(1)}%
+                </p>
               </div>
             </div>
           </div>
@@ -253,7 +492,7 @@ const BackupRestore: React.FC = () => {
                 }`}
               >
                 <div className="flex items-center justify-center gap-2">
-                  <CloudUpload className="w-4 h-4" />
+                  <Upload className="w-4 h-4" />
                   Create Backup
                 </div>
               </button>
@@ -266,7 +505,7 @@ const BackupRestore: React.FC = () => {
                 }`}
               >
                 <div className="flex items-center justify-center gap-2">
-                  <CloudDownload className="w-4 h-4" />
+                  <Download className="w-4 h-4" />
                   Restore Backup
                 </div>
               </button>
@@ -332,7 +571,7 @@ const BackupRestore: React.FC = () => {
                         <div className={`p-2 rounded-lg ${
                           backupType === 'incremental' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
                         }`}>
-                          <Clock className="w-4 h-4" />
+                          <History className="w-4 h-4" />
                         </div>
                         <div className="text-left">
                           <p className="font-semibold text-slate-900">Incremental Backup</p>
@@ -342,45 +581,45 @@ const BackupRestore: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Backup Options */}
+                  {/* Collection Selection */}
                   <div className="bg-slate-50 rounded-xl p-6">
-                    <h4 className="font-medium text-slate-900 mb-4">Backup Options</h4>
-                    <div className="space-y-4">
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={includeData}
-                          onChange={(e) => setIncludeData(e.target.checked)}
-                          className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700">Include all data records</span>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={includeSchema}
-                          onChange={(e) => setIncludeSchema(e.target.checked)}
-                          className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700">Include database schema</span>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={includeUsers}
-                          onChange={(e) => setIncludeUsers(e.target.checked)}
-                          className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
-                        />
-                        <span className="text-slate-700">Include user accounts and permissions</span>
-                      </label>
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-medium text-slate-900">Select Collections</h4>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={selectAllCollections}
+                          className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          onClick={deselectAllCollections}
+                          className="text-sm text-slate-600 hover:text-slate-700 font-medium"
+                        >
+                          Deselect All
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {availableCollections.map(collection => (
+                        <label key={collection} className="flex items-center gap-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedCollections.includes(collection)}
+                            onChange={() => toggleCollection(collection)}
+                            className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+                          />
+                          <span className="text-slate-700 capitalize">{collection}</span>
+                        </label>
+                      ))}
                     </div>
                   </div>
                 </div>
 
                 {/* Create Backup Button */}
                 <button
-                  onClick={handleBackup}
-                  disabled={isLoading}
+                  onClick={createBackup}
+                  disabled={isLoading || selectedCollections.length === 0}
                   className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white py-4 px-6 rounded-xl font-semibold shadow-lg shadow-blue-500/25 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isLoading ? (
@@ -390,7 +629,7 @@ const BackupRestore: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <CloudUpload className="w-5 h-5" />
+                      <Upload className="w-5 h-5" />
                       Create Backup Now
                     </>
                   )}
@@ -407,11 +646,11 @@ const BackupRestore: React.FC = () => {
                   >
                     <Upload className="w-12 h-12 text-slate-400 mx-auto mb-4" />
                     <p className="text-slate-700 mb-2">Click to upload or drag and drop</p>
-                    <p className="text-sm text-slate-500">SQL backup files only</p>
+                    <p className="text-sm text-slate-500">JSON backup files only</p>
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".sql,.backup"
+                      accept=".json"
                       onChange={handleFileUpload}
                       className="hidden"
                     />
@@ -420,59 +659,77 @@ const BackupRestore: React.FC = () => {
 
                 {/* Existing Backups */}
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-900 mb-4">Available Backups</h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-slate-900">Available Backups</h3>
+                    <button
+                      onClick={loadBackupFiles}
+                      className="flex items-center gap-2 text-sm text-slate-600 hover:text-slate-900"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Refresh
+                    </button>
+                  </div>
                   <div className="space-y-3">
-                    {backupFiles.map((backup) => (
-                      <div
-                        key={backup.id}
-                        className={`p-4 rounded-xl border-2 transition-all duration-200 cursor-pointer ${
-                          selectedBackup === backup.id
-                            ? 'border-blue-500 bg-blue-50/50 shadow-sm'
-                            : 'border-slate-200 hover:border-slate-300'
-                        }`}
-                        onClick={() => setSelectedBackup(backup.id)}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className={`p-2 rounded-lg ${
-                              backup.type === 'full' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'
-                            }`}>
-                              {backup.type === 'full' ? <Database className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
-                            </div>
-                            <div>
-                              <p className="font-medium text-slate-900">{backup.filename}</p>
-                              <div className="flex items-center gap-4 text-sm text-slate-600">
-                                <span>{backup.size}</span>
-                                <span>{backup.createdAt}</span>
-                                <span className="flex items-center gap-1">
-                                  <div className={`w-2 h-2 rounded-full ${
-                                    backup.status === 'completed' ? 'bg-green-500' : 'bg-red-500'
-                                  }`} />
-                                  {backup.status}
-                                </span>
+                    {backupFiles.length === 0 ? (
+                      <div className="text-center py-8 text-slate-500">
+                        <Database className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                        <p>No backup files found</p>
+                      </div>
+                    ) : (
+                      backupFiles.map((backup) => (
+                        <div
+                          key={backup.id}
+                          className={`p-4 rounded-xl border-2 transition-all duration-200 cursor-pointer ${
+                            selectedBackup === backup.id
+                              ? 'border-blue-500 bg-blue-50/50 shadow-sm'
+                              : 'border-slate-200 hover:border-slate-300'
+                          }`}
+                          onClick={() => setSelectedBackup(backup.id)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className={`p-2 rounded-lg ${
+                                backup.type === 'full' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'
+                              }`}>
+                                {backup.type === 'full' ? <Database className="w-4 h-4" /> : <History className="w-4 h-4" />}
+                              </div>
+                              <div>
+                                <p className="font-medium text-slate-900">{backup.filename}</p>
+                                <div className="flex items-center gap-4 text-sm text-slate-600">
+                                  <span>{formatFileSize(backup.size)}</span>
+                                  <span>{formatDate(backup.createdAt)}</span>
+                                  <span className="flex items-center gap-1">
+                                    <div className={`w-2 h-2 rounded-full ${
+                                      backup.status === 'completed' ? 'bg-green-500' : 
+                                      backup.status === 'in_progress' ? 'bg-yellow-500' : 'bg-red-500'
+                                    }`} />
+                                    {backup.status}
+                                  </span>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                downloadBackup(backup.id);
-                              }}
-                              className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-                            >
-                              <Download className="w-4 h-4" />
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  downloadBackup(backup.id);
+                                }}
+                                className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                                title="Download Backup"
+                              >
+                                <Download className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                 </div>
 
                 {/* Restore Button */}
                 <button
-                  onClick={handleRestore}
+                  onClick={restoreBackup}
                   disabled={isLoading || !selectedBackup}
                   className="w-full bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white py-4 px-6 rounded-xl font-semibold shadow-lg shadow-emerald-500/25 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
@@ -483,7 +740,7 @@ const BackupRestore: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <CloudDownload className="w-5 h-5" />
+                      <Download className="w-5 h-5" />
                       Restore Selected Backup
                     </>
                   )}

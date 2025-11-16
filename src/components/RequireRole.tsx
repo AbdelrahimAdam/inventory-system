@@ -1,21 +1,20 @@
-// src/components/RequireRole.tsx
-import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Box, CircularProgress, Typography, Alert } from "@mui/material";
 
-// Schema-defined roles based on inventory_system.roles table
-type SchemaRole = "SUPER_ADMIN" | "MANAGER" | "WORKER" | "BUYER" | "SUPPLIER";
+// Firebase-compatible roles
+type FirebaseRole = "superadmin" | "manager" | "worker" | "buyer" | "supplier" | "user";
 
-// Permission types based on inventory_system.role_feature_permissions
-type PermissionType = 'view' | 'create' | 'edit' | 'delete' | 'export' | 'approve';
+// Simplified permission types for Firebase
+type PermissionType = 'view' | 'create' | 'edit' | 'delete' | 'export' | 'manage' | 'approve';
 
 interface RequireRoleProps {
-  allowedRoles: SchemaRole[];
+  allowedRoles: FirebaseRole[];
   requiredFeature?: string;
   requiredPermission?: PermissionType;
   requireOwnership?: boolean;
-  ownerId?: number | string;
+  ownerId?: string;
   children?: React.ReactNode;
 }
 
@@ -32,10 +31,10 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     loading, 
     initialized, 
     isAuthenticated, 
-    hasPermission, 
-    permissions,
-    role,
-    isSuperAdmin: contextIsSuperAdmin
+    isSuperAdmin,
+    hasRole,
+    hasFeature,
+    canPerform
   } = useAuth();
   
   const location = useLocation();
@@ -52,47 +51,32 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   const accessCheckId = useRef(0);
 
-  // ✅ ULTIMATE SUPER_ADMIN DETECTION - Only SUPER_ADMIN gets special privileges
-  const isSuperAdmin = useMemo((): boolean => {
-    // Priority 1: Use context isSuperAdmin (most reliable)
-    if (contextIsSuperAdmin) {
-      return true;
-    }
+  // ✅ Role normalization for Firebase - FIXED VERSION
+  const normalizeRole = (userRole: string): FirebaseRole => {
+    if (!userRole) return "user";
+    
+    const role = userRole.toLowerCase().trim();
+    
+    const roleMap: Record<string, FirebaseRole> = {
+      'superadmin': "superadmin",
+      'super_admin': "superadmin",
+      'admin': "superadmin", // Map admin to superadmin for Firebase
+      'manager': "manager",
+      'administrator': "manager",
+      'worker': "worker",
+      'user': "worker",
+      'employee': "worker",
+      'staff': "worker",
+      'buyer': "buyer",
+      'supplier': "supplier",
+      'vendor': "supplier",
+      'client': "buyer"
+    };
 
-    // Priority 2: Check from AuthContext role
-    if (role === 'SUPER_ADMIN') {
-      return true;
-    }
+    return roleMap[role] || "worker";
+  };
 
-    // Priority 3: Check user role_name from database (exact match)
-    if (user?.role_name) {
-      const normalizedRole = user.role_name.toString().toUpperCase().trim();
-      const superAdminPatterns = [
-        'SUPER_ADMIN', 'SUPERADMIN', 'SUPER ADMIN', 'SUPER-ADMIN'
-      ];
-      
-      if (superAdminPatterns.some(pattern => 
-        normalizedRole === pattern.toUpperCase() ||
-        normalizedRole.replace(/[^A-Z]/g, '') === 'SUPERADMIN'
-      )) {
-        return true;
-      }
-    }
-
-    // Priority 4: Check role_id (SUPER_ADMIN typically has role_id = 1)
-    if (user?.role_id === 1) {
-      return true;
-    }
-
-    // Priority 5: Check security_level (SUPER_ADMIN = 100 in schema)
-    if (user?.security_level === 100) {
-      return true;
-    }
-
-    return false;
-  }, [user, role, contextIsSuperAdmin]);
-
-  // ✅ SUPER_ADMIN has immediate access to everything - NO OTHER ROLE GETS THIS
+  // ✅ SUPER_ADMIN has immediate access to everything - FIXED
   const hasRequiredRole = useCallback((): boolean => {
     // ✅ SUPER_ADMIN ULTIMATE PRIVILEGE - ACCESS TO ALL ROUTES
     if (isSuperAdmin) {
@@ -100,27 +84,31 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       return true;
     }
 
-    // ❌ STRICT ROLE CHECK FOR NON-SUPER_ADMIN USERS
-    if (!allowedRoles.length) return false; // No allowed roles = no access
-    if (!user?.role_name) return false;
+    // Use the hasRole method from AuthContext which properly checks custom claims
+    if (hasRole && typeof hasRole === 'function') {
+      return hasRole(allowedRoles);
+    }
 
-    const userRole = user.role_name.toUpperCase().trim();
-    
-    // Strict role matching - only exact matches allowed
+    // Fallback check if hasRole method is not available
+    if (!allowedRoles.length) return false;
+    if (!user?.role) return false;
+
+    const userRole = normalizeRole(user.role);
     const hasExactRole = allowedRoles.some(allowedRole => 
-      allowedRole.toUpperCase() === userRole
+      allowedRole.toLowerCase() === userRole
     );
 
     if (!hasExactRole) {
-      console.log('🔴 [RequireRole] Role requirement not met for non-SUPER_ADMIN:', {
+      console.log('🔴 [RequireRole] Role requirement not met:', {
         userRole,
         allowedRoles,
-        isSuperAdmin: false
+        userRoleFromAuth: user.role,
+        isSuperAdmin
       });
     }
 
     return hasExactRole;
-  }, [allowedRoles, user, isSuperAdmin]);
+  }, [allowedRoles, user, isSuperAdmin, hasRole]);
 
   // ✅ Ownership check - SUPER_ADMIN bypasses all ownership restrictions
   const hasOwnership = useCallback((): boolean => {
@@ -133,13 +121,13 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     }
 
     // ❌ STRICT OWNERSHIP CHECK FOR NON-SUPER_ADMIN USERS
-    const isOwner = user.id.toString() === ownerId.toString();
+    const isOwner = user.uid === ownerId;
     
     if (!isOwner) {
-      console.log('🔴 [RequireRole] Ownership requirement not met for non-SUPER_ADMIN:', {
-        userId: user.id,
+      console.log('🔴 [RequireRole] Ownership requirement not met:', {
+        userId: user.uid,
         ownerId,
-        isSuperAdmin: false
+        isSuperAdmin
       });
     }
 
@@ -155,61 +143,83 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
     if (!requiredFeature) return true;
     
-    // ❌ STRICT PERMISSION CHECK FOR NON-SUPER_ADMIN USERS
+    // Use the hasFeature method from AuthContext
+    if (hasFeature && typeof hasFeature === 'function') {
+      return hasFeature(requiredFeature);
+    }
+
+    // Fallback check
     let hasPerm = false;
     
-    // Use AuthContext's hasPermission method for consistency
-    if (hasPermission && typeof hasPermission === 'function') {
-      hasPerm = hasPermission(requiredFeature, requiredPermission);
-    } else {
-      // Fallback to local permission check
-      const permission = permissions?.find(p => p.feature_code === requiredFeature);
-      
-      if (!permission) {
-        hasPerm = false;
-      } else {
-        // Check specific permission based on requiredPermission
-        switch (requiredPermission) {
-          case 'view':
-            hasPerm = permission.can_view === true;
-            break;
-          case 'create':
-            hasPerm = permission.can_create === true;
-            break;
-          case 'edit':
-            hasPerm = permission.can_edit === true;
-            break;
-          case 'delete':
-            hasPerm = permission.can_delete === true;
-            break;
-          case 'export':
-            hasPerm = permission.can_export === true;
-            break;
-          case 'approve':
-            hasPerm = permission.can_approve === true;
-            break;
-          default:
-            hasPerm = false;
-        }
-      }
+    if (user?.features) {
+      hasPerm = user.features[requiredFeature as keyof typeof user.features] === true;
     }
 
     if (!hasPerm) {
-      console.log('🔴 [RequireRole] Feature permission not met for non-SUPER_ADMIN:', {
+      console.log('🔴 [RequireRole] Feature permission not met:', {
         requiredFeature,
         requiredPermission,
-        isSuperAdmin: false
+        isSuperAdmin,
+        userFeatures: user?.features
       });
     }
 
     return hasPerm;
-  }, [requiredFeature, requiredPermission, isSuperAdmin, hasPermission, permissions]);
+  }, [requiredFeature, requiredPermission, isSuperAdmin, user, hasFeature]);
 
-  // ✅ ULTIMATE ACCESS CHECK - SUPER_ADMIN gets immediate full access, others get strict checks
+  // ✅ Permission action check
+  const hasRequiredActionPermission = useCallback((): boolean => {
+    if (!requiredPermission || requiredPermission === 'view') return true;
+    
+    // ✅ SUPER_ADMIN ULTIMATE PRIVILEGE - ALL ACTIONS ALLOWED
+    if (isSuperAdmin) {
+      return true;
+    }
+
+    // Use the canPerform method from AuthContext
+    if (canPerform && typeof canPerform === 'function') {
+      return canPerform(requiredPermission);
+    }
+
+    // Fallback permission check
+    const rolePermissions = {
+      'superadmin': ['view', 'create', 'edit', 'delete', 'export', 'manage', 'approve'],
+      'manager': ['view', 'create', 'edit', 'export', 'manage', 'approve'],
+      'worker': ['view', 'create', 'edit'],
+      'buyer': ['view', 'create'],
+      'supplier': ['view', 'edit'],
+      'user': ['view']
+    };
+
+    const userRole = normalizeRole(user?.role || 'user');
+    const permissions = rolePermissions[userRole] || ['view'];
+    const hasAction = permissions.includes(requiredPermission);
+
+    if (!hasAction) {
+      console.log('🔴 [RequireRole] Action permission not met:', {
+        requiredPermission,
+        userRole,
+        allowedPermissions: permissions,
+        isSuperAdmin
+      });
+    }
+
+    return hasAction;
+  }, [requiredPermission, isSuperAdmin, user, canPerform]);
+
+  // ✅ ULTIMATE ACCESS CHECK
   const checkAccess = useCallback((): boolean => {
     const currentCheckId = ++accessCheckId.current;
     
     try {
+      console.log('🟡 [RequireRole] Starting access check:', {
+        userRole: user?.role,
+        isSuperAdmin,
+        allowedRoles,
+        requiredFeature,
+        requiredPermission
+      });
+
       // Step 1: Check if auth is initialized and not loading
       if (!initialized || loading) {
         console.log('🟡 [RequireRole] Auth not ready - skipping check');
@@ -222,32 +232,45 @@ const RequireRole: React.FC<RequireRoleProps> = ({
         return false;
       }
 
+      console.log('🔍 [RequireRole] User details:', {
+        uid: user.uid,
+        role: user.role,
+        isSuperAdmin,
+        features: user.features
+      });
+
       // ✅ Step 3: SUPER_ADMIN ULTIMATE BYPASS - FULL SYSTEM ACCESS
       if (isSuperAdmin) {
-        console.log('🔵 [RequireRole] SUPER_ADMIN ULTIMATE ACCESS GRANTED - bypassing all checks');
+        console.log('🔵 [RequireRole] SUPER_ADMIN ULTIMATE ACCESS GRANTED');
         return true;
       }
 
       // ❌ Step 4: STRICT role requirement for non-SUPER_ADMIN users
       if (!hasRequiredRole()) {
-        console.log('🔴 [RequireRole] Role requirement not met for non-SUPER_ADMIN');
+        console.log('🔴 [RequireRole] Role requirement not met');
         return false;
       }
 
-      // ❌ Step 5: STRICT feature permission requirement for non-SUPER_ADMIN users
+      // ❌ Step 5: STRICT feature permission requirement
       if (!hasRequiredFeaturePermission()) {
-        console.log('🔴 [RequireRole] Feature permission not met for non-SUPER_ADMIN');
+        console.log('🔴 [RequireRole] Feature permission not met');
         return false;
       }
 
-      // ❌ Step 6: STRICT ownership requirement for non-SUPER_ADMIN users
+      // ❌ Step 6: STRICT action permission requirement
+      if (!hasRequiredActionPermission()) {
+        console.log('🔴 [RequireRole] Action permission not met');
+        return false;
+      }
+
+      // ❌ Step 7: STRICT ownership requirement
       if (requireOwnership && !hasOwnership()) {
-        console.log('🔴 [RequireRole] Ownership requirement not met for non-SUPER_ADMIN');
+        console.log('🔴 [RequireRole] Ownership requirement not met');
         return false;
       }
 
       // All STRICT checks passed for non-SUPER_ADMIN
-      console.log('🟢 [RequireRole] Access granted for non-SUPER_ADMIN user after strict checks');
+      console.log('🟢 [RequireRole] Access granted after all checks');
       return true;
 
     } catch (error: any) {
@@ -264,9 +287,13 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     user, 
     isSuperAdmin, 
     hasRequiredRole, 
-    hasRequiredFeaturePermission, 
+    hasRequiredFeaturePermission,
+    hasRequiredActionPermission,
     requireOwnership, 
-    hasOwnership
+    hasOwnership,
+    allowedRoles,
+    requiredFeature,
+    requiredPermission
   ]);
 
   // ✅ Optimized useEffect for access verification
@@ -289,7 +316,7 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       
       // Skip if auth state hasn't changed significantly and we've already checked
       if (
-        prevState.user?.id === currentAuthState.user?.id &&
+        prevState.user?.uid === currentAuthState.user?.uid &&
         prevState.isAuthenticated === currentAuthState.isAuthenticated &&
         prevState.initialized === currentAuthState.initialized &&
         prevState.loading === currentAuthState.loading &&
@@ -302,13 +329,19 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       prevAuthState.current = currentAuthState;
 
       try {
-        // Direct synchronous check - no async operations
         const hasAccess = checkAccess();
         
         if (isMounted) {
           setAccessGranted(hasAccess);
           setAccessChecked(true);
           setCheckError(null);
+          
+          console.log('📊 [RequireRole] Access check completed:', {
+            granted: hasAccess,
+            userRole: user?.role,
+            isSuperAdmin,
+            allowedRoles
+          });
         }
       } catch (error: any) {
         console.error('🔴 [RequireRole] Error in verifyAccess:', error);
@@ -320,17 +353,15 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       }
     };
 
-    // Only set timeout if we haven't checked access yet
-    if (!accessChecked) {
-      verificationTimeout = setTimeout(() => {
-        if (isMounted && !accessChecked) {
-          console.warn('🟡 [RequireRole] Access verification timeout - forcing completion');
-          setAccessChecked(true);
-          setAccessGranted(false);
-          setCheckError('Access verification took too long');
-        }
-      }, 2000);
-    }
+    // Set timeout for access check
+    verificationTimeout = setTimeout(() => {
+      if (isMounted && !accessChecked) {
+        console.warn('🟡 [RequireRole] Access verification timeout');
+        setAccessChecked(true);
+        setAccessGranted(false);
+        setCheckError('Access verification took too long');
+      }
+    }, 3000);
 
     // Start verification when auth state changes
     if (initialized && !loading) {
@@ -382,8 +413,11 @@ const RequireRole: React.FC<RequireRoleProps> = ({
           جاري التحقق من الصلاحيات...
         </Typography>
         <Typography variant="body2" color="textSecondary">
-          {user?.role_name && `الدور: ${user.role_name}`}
+          {user?.role && `الدور: ${user.role}`}
           {isSuperAdmin && ' (مدير النظام - صلاحيات كاملة)'}
+        </Typography>
+        <Typography variant="body2" color="textSecondary">
+          المطلوب: {allowedRoles.join(' أو ')}
         </Typography>
       </Box>
     );
@@ -416,13 +450,16 @@ const RequireRole: React.FC<RequireRoleProps> = ({
               <strong>تفاصيل المستخدم:</strong>
             </Typography>
             <Typography variant="body2">
-              الدور: {user?.role_name || 'غير معروف'}
+              الدور: {user?.role || 'غير معروف'}
             </Typography>
             <Typography variant="body2">
               SUPER_ADMIN: {isSuperAdmin ? 'نعم - صلاحيات كاملة' : 'لا - صلاحيات محدودة'}
             </Typography>
             <Typography variant="body2">
-              المعرف: {user?.id || 'غير معروف'}
+              المعرف: {user?.uid || 'غير معروف'}
+            </Typography>
+            <Typography variant="body2">
+              الأدوار المسموحة: {allowedRoles.join(', ')}
             </Typography>
           </Box>
         </Alert>
@@ -432,11 +469,15 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   // ✅ ACCESS GRANTED - render protected content
   if (accessGranted) {
-    console.log('🟢 [RequireRole] Rendering protected content for:', user?.role_name, 'SUPER_ADMIN:', isSuperAdmin);
+    console.log('🟢 [RequireRole] Rendering protected content for:', {
+      role: user?.role,
+      isSuperAdmin,
+      allowedRoles
+    });
     return children ? <>{children}</> : <Outlet />;
   }
 
-  // ✅ Check specific reasons for access denial
+  // ✅ ACCESS DENIED - handle different denial reasons
   if (user && isAuthenticated) {
     // User is authenticated but access was denied
     
@@ -449,72 +490,50 @@ const RequireRole: React.FC<RequireRoleProps> = ({
           state={{ 
             from: location, 
             reason: 'super_admin_error',
-            message: 'خطأ في نظام الصلاحيات لمدير النظام'
+            message: 'خطأ في نظام الصلاحيات لمدير النظام',
+            userRole: user.role,
+            allowedRoles
           }} 
           replace 
         />
       );
     }
 
-    // Check role requirement for non-SUPER_ADMIN users
-    if (!hasRequiredRole()) {
-      return (
-        <Navigate 
-          to="/unauthorized" 
-          state={{ 
-            from: location, 
-            reason: 'insufficient_role',
-            userRole: user.role_name,
-            allowedRoles: allowedRoles,
-            message: `لا تمتلك الصلاحية الكافية. دورك الحالي: ${user.role_name}، المطلوب: ${allowedRoles.join(' أو ')}`
-          }} 
-          replace 
-        />
-      );
-    }
+    // Check specific denial reasons
+    const roleDenied = !hasRequiredRole();
+    const featureDenied = requiredFeature && !hasRequiredFeaturePermission();
+    const actionDenied = requiredPermission && !hasRequiredActionPermission();
+    const ownershipDenied = requireOwnership && !hasOwnership();
 
-    // Check feature permission for non-SUPER_ADMIN users
-    if (requiredFeature && !hasRequiredFeaturePermission()) {
-      return (
-        <Navigate 
-          to="/unauthorized" 
-          state={{ 
-            from: location, 
-            reason: 'insufficient_permission',
-            feature: requiredFeature,
-            permission: requiredPermission,
-            userRole: user.role_name,
-            message: `لا تمتلك صلاحية ${requiredPermission} للميزة ${requiredFeature}`
-          }} 
-          replace 
-        />
-      );
-    }
+    console.log('🔴 [RequireRole] Access denied reasons:', {
+      roleDenied,
+      featureDenied,
+      actionDenied,
+      ownershipDenied,
+      userRole: user.role,
+      allowedRoles,
+      requiredFeature,
+      requiredPermission
+    });
 
-    // Check ownership for non-SUPER_ADMIN users
-    if (requireOwnership && !hasOwnership()) {
-      return (
-        <Navigate 
-          to="/unauthorized" 
-          state={{ 
-            from: location, 
-            reason: 'insufficient_ownership',
-            userRole: user.role_name,
-            message: 'لا تمتلك صلاحية التعديل على هذا العنصر'
-          }} 
-          replace 
-        />
-      );
-    }
-
-    // Session expired or other issues
     return (
       <Navigate 
-        to="/login" 
+        to="/unauthorized" 
         state={{ 
           from: location, 
-          reason: 'session_expired',
-          message: 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مرة أخرى'
+          reason: roleDenied ? 'insufficient_role' : 
+                  featureDenied ? 'insufficient_feature' :
+                  actionDenied ? 'insufficient_permission' :
+                  ownershipDenied ? 'insufficient_ownership' : 'unknown',
+          userRole: user.role,
+          allowedRoles: allowedRoles,
+          requiredFeature,
+          requiredPermission,
+          message: roleDenied ? `لا تمتلك الصلاحية الكافية. دورك الحالي: ${user.role}، المطلوب: ${allowedRoles.join(' أو ')}` :
+                    featureDenied ? `لا تمتلك صلاحية الوصول للميزة: ${requiredFeature}` :
+                    actionDenied ? `لا تمتلك صلاحية ${requiredPermission} لهذا العنصر` :
+                    ownershipDenied ? 'لا تمتلك صلاحية التعديل على هذا العنصر' :
+                    'غير مصرح بالوصول'
         }} 
         replace 
       />

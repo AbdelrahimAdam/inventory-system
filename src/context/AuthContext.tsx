@@ -5,908 +5,889 @@ import React, {
   useState,
   useEffect,
   ReactNode,
-  useRef,
-  useMemo,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../utils/utils/axios";
+import {
+  User as FirebaseUser,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  updateProfile,
+  updatePassword,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
+  IdTokenResult,
+} from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  enableIndexedDbPersistence,
+  onSnapshotsInSync,
+} from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { getAuth, getFirestore } from "../firebase/config";
+import { EmailVerificationService, PasswordResetService } from "../services/firebase";
 
-// ✅ Environment variable configuration
-const BASE_API_URL = import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001/api/v1";
-
-// Schema-compatible interfaces based on inventory_system schema
-interface Permission {
-  feature_code: string;
-  feature_name: string;
-  feature_description: string;
-  category: string;
-  can_view: boolean;
-  can_create: boolean;
-  can_edit: boolean;
-  can_delete: boolean;
-  can_export: boolean;
-  view_scope: "NONE" | "OWN" | "ALL";
-  edit_scope: "NONE" | "OWN" | "ALL";
-  export_scope: "NONE" | "OWN" | "ALL";
-}
-
-interface AuthUser {
-  user_id: number;
-  user_username: string;
-  full_name: string;
-  role_id: number;
-  role_name: string;
-  is_verified: boolean;
-  mfa_enabled: boolean;
-  session_token: string;
-  session_expires: string;
-  permissions: Permission[];
-}
-
-interface User extends AuthUser {
-  id: number;
-  uuid: string;
-  username: string;
-  email: string;
-  is_active: boolean;
-  is_locked: boolean;
-  email_verified: boolean;
-  last_login: string | null;
-  settings: {
+// === Firebase-compatible interfaces ===
+interface User {
+  uid: string;
+  email: string | null;
+  name: string;
+  role: 'superadmin' | 'super_admin' | 'manager' | 'worker' | 'supplier' | 'buyer' | 'user';
+  features: {
+    userManagement?: boolean;
+    systemConfig?: boolean;
+    auditLogs?: boolean;
+    backupRestore?: boolean;
+    roleManagement?: boolean;
+    inventoryManagement?: boolean;
+    reports?: boolean;
+    approvals?: boolean;
+  };
+  isActive: boolean;
+  emailVerified: boolean;
+  createdAt: any;
+  updatedAt: any;
+  lastVerificationSent?: any;
+  settings?: {
     theme: string;
     language: string;
     notifications: boolean;
   };
-  security_level: number;
-  mfa_required: boolean;
-  created_at?: string;
-  updated_at?: string;
-  isSuperAdmin?: boolean;
 }
 
 interface LoginResponse {
   success: boolean;
   message?: string;
-  detail?: string;
-  requiresMFA?: boolean;
-  email?: string;
-  user?: AuthUser;
+  user?: User;
 }
 
 interface RegisterResponse {
   success: boolean;
   message?: string;
-  detail?: string;
-  user_id?: number;
-  username?: string;
-  email?: string;
-  full_name?: string;
-  role_id?: number;
-  role_name?: string;
-  is_active?: boolean;
-  created_at?: string;
-  email_verified?: boolean;
-}
-
-interface ValidateSessionResponse {
-  success: boolean;
-  is_valid: boolean;
-  message?: string;
-  user_id?: number;
-  username?: string;
-  user_username?: string;
-  full_name?: string;
-  role_id?: number;
-  role_name?: string;
-  is_verified?: boolean;
-  is_active?: boolean;
-  is_locked?: boolean;
-  email_verified?: boolean;
-  mfa_enabled?: boolean;
-  session_token?: string;
-  session_expires?: string;
-  permissions?: Permission[];
-  email?: string;
-  last_login?: string | null;
+  user?: User;
 }
 
 interface AuthContextProps {
   user: User | null;
-  sessionToken: string | null;
+  firebaseUser: FirebaseUser | null;
   loading: boolean;
   initialized: boolean;
   isAuthenticated: boolean;
-  permissions: Permission[];
   isLoggingIn: boolean;
   isSuperAdmin: boolean;
   role: string | null;
-  login: (
-    username: string,
-    password: string,
-    mfaCode?: string,
-    ip_address?: string,
-    user_agent?: string
-  ) => Promise<LoginResponse>;
-  registerUser: (
-    full_name: string,
-    email: string,
-    password: string,
-    role_name: string,
-    ip_address?: string,
-    user_agent?: string
-  ) => Promise<RegisterResponse>;
-  resendVerification: (
-    email: string
-  ) => Promise<{ success: boolean; message?: string }>;
+  isOnline: boolean;
+  authReady: boolean;
+  login: (email: string, password: string) => Promise<LoginResponse>;
+  registerUser: (name: string, email: string, password: string, role: string) => Promise<RegisterResponse>;
   logout: () => Promise<void>;
-  validateSession: (session_token?: string) => Promise<boolean>;
-  getPermissions: () => Promise<Permission[]>;
-  hasPermission: (feature_code: string, required_permission?: string) => boolean;
-  canAccessFeature: (
-    feature_code: string,
-    required_permission?: string
-  ) => boolean;
-  getRedirectPath: (role?: string) => string;
-  refreshSession: () => Promise<boolean>;
-  updateUserSettings: (settings: Partial<User["settings"]>) => void;
-  changePassword: (
-    currentPassword: string,
-    newPassword: string
-  ) => Promise<{ success: boolean; message?: string }>;
-  checkFeatureAccess: (
-    feature_code: string,
-    required_permission?: string
-  ) => Promise<{ success: boolean; has_access: boolean }>;
-  getCurrentUser: () => Promise<User | null>;
-  checkAvailability: (
-    email?: string,
-    username?: string
-  ) => Promise<{ success: boolean; exists: boolean }>;
-  getRoles: () => Promise<{
-    success: boolean;
-    roles: Array<{ id: number; name: string; description: string }>;
-  }>;
-  verifyEmail: (token: string) => Promise<{ success: boolean; message?: string }>;
+  validateSession: () => Promise<boolean>;
+  updateUserSettings: (settings: Partial<User["settings"]>) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; message?: string }>;
   requestPasswordReset: (email: string) => Promise<{ success: boolean; message?: string }>;
   resetPassword: (token: string, newPassword: string) => Promise<{ success: boolean; message?: string }>;
-  enableMFA: () => Promise<{ success: boolean; secret?: string; qrCode?: string }>;
-  verifyMFA: (token: string) => Promise<{ success: boolean; message?: string }>;
-  disableMFA: (password: string) => Promise<{ success: boolean; message?: string }>;
+  sendEmailVerification: () => Promise<{ success: boolean; message?: string }>;
+  resendVerificationEmail: () => Promise<{ success: boolean; message?: string }>;
+  checkEmailVerification: () => Promise<boolean>;
+  reloadUser: () => Promise<void>;
+  hasRole: (role: string | string[]) => boolean;
+  hasAnyRole: (roles: string[]) => boolean;
+  hasFeature: (feature: string) => boolean;
+  canPerform: (action: string) => boolean;
+  hasPermission: (featureCode: string, action?: string) => boolean;
+  refreshUserClaims: () => Promise<void>;
+  debugLogin: (email: string, password: string) => Promise<any>;
 }
 
+// === Context ===
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
 
-// ✅ Validate and sanitize token helpers
-const validateSessionToken = (token: string): { isValid: boolean } => {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return { isValid: !!token && uuidRegex.test(token) };
-};
-
-const sanitizeSessionToken = (token: any): string | null => {
-  if (!token) return null;
-  const tokenStr = String(token).trim();
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(tokenStr) ? tokenStr : null;
-};
-
-// ✅ Token refresh function
-const refreshAuthToken = async (): Promise<{ success: boolean; token?: string }> => {
-  try {
-    const refreshToken = localStorage.getItem("refresh_token");
-    if (!refreshToken) {
-      return { success: false };
-    }
-
-    const response = await api.post(`${BASE_API_URL}/auth/refresh`, {
-      refresh_token: refreshToken
-    });
-
-    if (response.data.success && response.data.access_token) {
-      localStorage.setItem("session_token", response.data.access_token);
-      if (response.data.refresh_token) {
-        localStorage.setItem("refresh_token", response.data.refresh_token);
-      }
-      return { success: true, token: response.data.access_token };
-    }
-    return { success: false };
-  } catch (error) {
-    console.error('🔴 [AuthContext] Token refresh failed:', error);
-    return { success: false };
-  }
-};
-
-// ✅ Enhanced axios interceptor for token refresh
-const setupAxiosInterceptors = (logoutCallback: () => void) => {
-  // Request interceptor to add auth token
-  api.interceptors.request.use(
-    (config) => {
-      const token = localStorage.getItem("session_token");
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-        config.headers["X-Session-Token"] = token;
-      }
-      return config;
-    },
-    (error) => {
-      return Promise.reject(error);
-    }
-  );
-
-  // Response interceptor to handle token refresh
-  api.interceptors.response.use(
-    (response) => response,
-    async (error) => {
-      const originalRequest = error.config;
-
-      // If error is 401 and we haven't tried refreshing yet
-      if (error.response?.status === 401 && !originalRequest._retry) {
-        originalRequest._retry = true;
-
-        try {
-          const refreshResult = await refreshAuthToken();
-          if (refreshResult.success && refreshResult.token) {
-            // Retry the original request with new token
-            originalRequest.headers.Authorization = `Bearer ${refreshResult.token}`;
-            originalRequest.headers["X-Session-Token"] = refreshResult.token;
-            return api(originalRequest);
-          } else {
-            // Refresh failed - logout user
-            logoutCallback();
-          }
-        } catch (refreshError) {
-          console.error('🔴 [AuthContext] Token refresh interceptor failed:', refreshError);
-          logoutCallback();
-        }
-      }
-
-      return Promise.reject(error);
-    }
-  );
-};
-
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(() => {
-    const storedToken = localStorage.getItem("session_token");
-    return sanitizeSessionToken(storedToken);
-  });
-  const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
   const [initialized, setInitialized] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const isValidating = useRef(false);
-  const isMounted = useRef(true);
-  const hasInitialized = useRef(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [authReady, setAuthReady] = useState(false);
   const navigate = useNavigate();
 
-  // ✅ Enhanced logout function
-  const enhancedLogout = React.useCallback(async (): Promise<void> => {
+  // === Lazy Firebase Initialization ===
+  const initializeFirebase = async () => {
     try {
-      // Clear local storage first
-      localStorage.removeItem("session_token");
-      localStorage.removeItem("refresh_token");
-      
-      // Attempt backend logout (but don't block if it fails)
-      if (sessionToken) {
-        await api.post(`${BASE_API_URL}/auth/logout`, {
-          session_token: sessionToken,
-        }).catch((error) => {
-          console.warn('🔵 [AuthContext] Backend logout failed, but proceeding...', error.message);
-        });
-      }
+      console.log("🚀 Initializing Firebase services in background...");
+      await Promise.all([
+        getAuth(),
+        getFirestore()
+      ]);
+      setAuthReady(true);
+      console.log("✅ Firebase services ready");
     } catch (error) {
-      console.error('🔴 [AuthContext] Logout error:', error);
-    } finally {
-      // Always clear state and redirect
-      setSessionToken(null);
-      setUser(null);
-      setPermissions([]);
-      navigate("/login", { replace: true });
+      console.error("Firebase initialization failed:", error);
+      setAuthReady(true);
     }
-  }, [sessionToken, navigate]);
+  };
 
-  // ✅ Setup axios interceptors
-  useEffect(() => {
-    setupAxiosInterceptors(enhancedLogout);
-  }, [enhancedLogout]);
-
-  // ✅ ULTIMATE SUPER_ADMIN DETECTION - Always returns true for role_id = 1
-  const detectSuperAdmin = (userData: any): boolean => {
-    if (!userData) return false;
-
-    // ✅ PRIMARY: Role ID = 1 is ALWAYS SUPER_ADMIN (based on your schema)
-    if (userData.role_id === 1) {
-      return true;
-    }
-
-    // ✅ SECONDARY: Role name detection
-    if (userData.role_name && userData.role_name.trim().length > 0) {
-      const roleName = userData.role_name.toString().trim().toUpperCase();
-      const superAdminPatterns = [
-        'SUPER_ADMIN', 'SUPERADMIN', 'SUPER ADMIN', 'SUPER-ADMIN'
-      ];
-      
-      if (superAdminPatterns.some(pattern => 
-        roleName === pattern.toUpperCase() ||
-        roleName.replace(/[^A-Z]/g, '') === 'SUPERADMIN'
-      )) {
-        return true;
+  // === Enable Offline Persistence (Lazy) ===
+  const enablePersistence = async () => {
+    try {
+      const db = await getFirestore();
+      await enableIndexedDbPersistence(db);
+      console.log("💾 Persistence enabled: Firestore offline cache active");
+    } catch (err: any) {
+      if (err.code === 'failed-precondition') {
+        console.warn("Persistence failed: Multiple tabs open");
+      } else if (err.code === 'unimplemented') {
+        console.warn("Persistence not supported in this browser");
       }
     }
-
-    // ✅ TERTIARY: Security level check (SUPER_ADMIN = 100 in schema)
-    if (userData.security_level === 100) {
-      return true;
-    }
-
-    return false;
   };
 
-  // ✅ SUPER_ADMIN has FULL SYSTEM ACCESS - no restrictions
-  const isSuperAdminUser = useMemo((): boolean => {
-    return detectSuperAdmin(user);
-  }, [user]);
-
-  const isAuthenticated = useMemo(
-    () => !!user && !!sessionToken,
-    [user, sessionToken]
-  );
-
-  // ✅ PRODUCTION-READY role normalization
-  const normalizeRole = (roleInput?: any): string => {
-    if (!roleInput) return "WORKER";
-
-    // Use role_id as primary source of truth
-    const roleId = roleInput.role_id;
-    
-    // Map role_id to role names based on common database patterns
-    const roleIdMap: Record<number, string> = {
-      1: "SUPER_ADMIN",
-      2: "MANAGER", 
-      3: "WORKER",
-      4: "BUYER",
-      5: "SUPPLIER"
-    };
-
-    // If we have a valid role_id mapping, use it
-    if (roleId && roleIdMap[roleId]) {
-      return roleIdMap[roleId];
-    }
-
-    // Fallback to role_name parsing
-    const roleStr = typeof roleInput === "string"
-      ? roleInput
-      : (roleInput.role_name || roleInput.role || roleInput.name || "");
-
-    if (!roleStr || typeof roleStr !== "string") return "WORKER";
-
-    const normalized = roleStr.toUpperCase().trim().replace(/[\s_-]+/g, "_");
-
-    const roleMap: Record<string, string> = {
-      SUPERADMIN: "SUPER_ADMIN",
-      SUPER_ADMIN: "SUPER_ADMIN",
-      ADMIN: "MANAGER",
-      MANAGER: "MANAGER",
-      WORKER: "WORKER",
-      BUYER: "BUYER",
-      SUPPLIER: "SUPPLIER",
-    };
-
-    return roleMap[normalized] || "WORKER";
-  };
-
-  // ✅ PRODUCTION-READY redirect path determination
-  const getRedirectPath = (roleOrUser?: string | any): string => {
-    const role = normalizeRole(roleOrUser);
-    
-    const redirectPaths: Record<string, string> = {
-      SUPER_ADMIN: "/superadmin/dashboard",
-      MANAGER: "/manager/dashboard",
-      WORKER: "/worker/dashboard",
-      BUYER: "/buyer/dashboard",
-      SUPPLIER: "/supplier/dashboard",
-    };
-
-    return redirectPaths[role] || "/dashboard";
-  };
-
-  // ✅ Update axios baseURL dynamically
+  // === Network Status Listener ===
   useEffect(() => {
-    api.defaults.baseURL = BASE_API_URL;
+    const handleOnline = () => {
+      setIsOnline(true);
+      console.log("🌐 Network: Back online");
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      console.warn("🌐 Network: Offline mode");
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }, []);
 
-  // ✅ PRODUCTION-READY user processing with SUPER_ADMIN priority
-  const processUser = (rawUser: any): User => {
-    // ✅ FORCE SUPER_ADMIN role_name if role_id = 1
-    let roleName = rawUser.role_name;
-    if (rawUser.role_id === 1) {
-      roleName = "SUPER_ADMIN";
+  // === Initialize Firebase in Background ===
+  useEffect(() => {
+    initializeFirebase();
+    enablePersistence().catch(console.error);
+  }, []);
+
+  // === Enhanced Role normalization function ===
+  const normalizeRole = (role: string): string => {
+    if (!role) return 'user';
+    
+    const normalized = role.toLowerCase().trim();
+    
+    // Handle all super admin variations
+    if (normalized === 'superadmin' || normalized === 'super_admin' || normalized === 'super-admin' || normalized === 'super admin') {
+      return 'superadmin';
     }
-
-    const isSuperAdmin = detectSuperAdmin({ ...rawUser, role_name: roleName });
-
-    const processedUser = {
-      id: rawUser.user_id || rawUser.id || 0,
-      uuid: rawUser.uuid || "",
-      user_id: rawUser.user_id || rawUser.id || 0,
-      user_username: rawUser.user_username || rawUser.username || "",
-      username: rawUser.user_username || rawUser.username || "",
-      email: rawUser.email || "",
-      full_name: rawUser.full_name || "",
-      role_id: rawUser.role_id || 0,
-      role_name: roleName || "",
-      is_active: rawUser.is_active ?? true,
-      is_verified: rawUser.is_verified ?? true,
-      is_locked: rawUser.is_locked ?? false,
-      email_verified: rawUser.email_verified ?? true,
-      mfa_enabled: rawUser.mfa_enabled ?? false,
-      last_login: rawUser.last_login || null,
-      session_token: rawUser.session_token || sessionToken || "",
-      session_expires: rawUser.session_expires || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
-      settings: typeof rawUser.settings === "string"
-        ? JSON.parse(rawUser.settings)
-        : rawUser.settings || { theme: "light", language: "en", notifications: true },
-      permissions: Array.isArray(rawUser.permissions) ? rawUser.permissions : [],
-      security_level: rawUser.security_level || (isSuperAdmin ? 100 : 1),
-      mfa_required: rawUser.mfa_required || false,
-      created_at: rawUser.created_at,
-      updated_at: rawUser.updated_at,
-      isSuperAdmin: isSuperAdmin
-    };
-
-    return processedUser;
+    
+    return normalized;
   };
 
-  // ✅ ENHANCED session validation with token refresh
-  const validateSession = async (providedToken?: string): Promise<boolean> => {
-    if (isValidating.current) return false;
-    isValidating.current = true;
+  // === Enhanced Check if user is super admin ===
+  const checkIsSuperAdmin = (role: string): boolean => {
+    if (!role) return false;
+    const normalized = normalizeRole(role);
+    return normalized === 'superadmin';
+  };
 
+  // === Handle missing claims recovery ===
+  const handleMissingClaims = async (firebaseUser: FirebaseUser): Promise<{ role: string; features: any } | null> => {
     try {
-      const tokenToValidate = providedToken || sessionToken;
+      console.log("🔄 Attempting to recover missing claims for user:", firebaseUser.uid);
       
-      // ✅ SUPER_ADMIN bypass: If we already have a SUPER_ADMIN user, skip validation
-      if (user && detectSuperAdmin(user)) {
-        console.log('🔵 [AuthContext] SUPER_ADMIN session - skipping validation');
-        setLoading(false);
-        isValidating.current = false;
-        return true;
+      const db = await getFirestore();
+      
+      const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        console.log("📋 Found user data in Firestore:", userData);
+        
+        if (userData.role && userData.role !== 'undefined') {
+          console.log("✅ Using Firestore role for claims recovery:", userData.role);
+          
+          try {
+            const { getFunctions } = await import('firebase/functions');
+            const functions = getFunctions();
+            const setUserRole = httpsCallable(functions, 'setUserRoleAndFeatures');
+            
+            console.log("🔄 Calling setUserRole cloud function...");
+            await setUserRole({ 
+              targetUserId: firebaseUser.uid, 
+              role: userData.role, 
+              features: userData.features || {} 
+            });
+            
+            console.log("⏳ Waiting for claims propagation...");
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            await firebaseUser.getIdToken(true);
+            console.log("✅ Claims recovery completed");
+            
+            return {
+              role: userData.role,
+              features: userData.features || {}
+            };
+          } catch (cloudError) {
+            console.warn("Cloud function unavailable, using Firestore data:", cloudError);
+            return {
+              role: userData.role,
+              features: userData.features || {}
+            };
+          }
+        }
+      }
+      
+      console.warn("❌ No valid role found in Firestore for recovery");
+      return null;
+    } catch (error) {
+      console.error("Error in handleMissingClaims:", error);
+      return null;
+    }
+  };
+
+  // === Enhanced token refresh ===
+  const refreshAuthToken = async (firebaseUser: FirebaseUser): Promise<IdTokenResult> => {
+    try {
+      const idTokenResult = await firebaseUser.getIdTokenResult(true);
+      return idTokenResult;
+    } catch (error) {
+      console.error("Token refresh failed:", error);
+      throw error;
+    }
+  };
+
+  // === Debug login function ===
+  const debugLogin = async (email: string, password: string) => {
+    console.log('=== DEBUG LOGIN START ===');
+    console.log('Email:', email);
+    
+    try {
+      const auth = await getAuth();
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      
+      console.log('✅ Firebase Auth Success - User UID:', user.uid);
+      
+      // Get token without refresh first
+      const idToken1 = await user.getIdTokenResult(false);
+      console.log('🔑 Claims WITHOUT refresh:', idToken1.claims);
+      console.log('📅 Token issued:', new Date(idToken1.issuedAtTime).toLocaleString());
+      
+      // Get token with refresh
+      const idToken2 = await user.getIdTokenResult(true);
+      console.log('🔑 Claims WITH refresh:', idToken2.claims);
+      console.log('📅 Token issued:', new Date(idToken2.issuedAtTime).toLocaleString());
+      
+      // Check Firestore user data
+      try {
+        const db = await getFirestore();
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        if (userDoc.exists()) {
+          console.log('📋 Firestore user data:', userDoc.data());
+        } else {
+          console.log('❌ No Firestore user document found');
+        }
+      } catch (firestoreError) {
+        console.error('❌ Firestore error:', firestoreError);
+      }
+      
+      console.log('=== DEBUG LOGIN END ===');
+      
+      return { success: true, claims: idToken2.claims };
+    } catch (error: any) {
+      console.error('❌ Debug login error:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // === Process Firebase user ===
+  const processFirebaseUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
+    try {
+      console.log("🔄 Processing Firebase user:", firebaseUser.uid);
+
+      let customClaims: any = {};
+      let claimsRecovered = false;
+      
+      try {
+        const idTokenResult = await refreshAuthToken(firebaseUser);
+        customClaims = idTokenResult.claims;
+        console.log("🔑 Custom claims from token:", customClaims);
+      } catch (err) {
+        console.error("❌ Failed to refresh token:", err);
+        return null;
       }
 
-      if (!tokenToValidate) {
-        setLoading(false);
-        return false;
+      // If no role claim found, try to recover from Firestore
+      if (!customClaims.role || customClaims.role === 'undefined') {
+        console.warn("⚠️ No valid role claim found in token, attempting recovery...");
+        const recoveredClaims = await handleMissingClaims(firebaseUser);
+        
+        if (recoveredClaims) {
+          customClaims = recoveredClaims;
+          claimsRecovered = true;
+        } else {
+          console.error("❌ Cannot proceed without role claims");
+          return null;
+        }
       }
 
-      console.log('🟡 [AuthContext] Validating session...');
-      const res = await api.post(`${BASE_API_URL}/auth/validate-session`, {
-        session_token: tokenToValidate,
+      const db = await getFirestore();
+      
+      let userData: any = {};
+      try {
+        const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
+        if (userDoc.exists()) {
+          userData = userDoc.data();
+        } else {
+          await initializeUserDocument(firebaseUser, customClaims);
+        }
+      } catch (err: any) {
+        console.error("Firestore access error:", err);
+        if (err.code === 'permission-denied') {
+          console.error("Firebase Rules blocked access");
+          if (customClaims.role) {
+            console.log("Proceeding with claims-only data");
+            userData = {};
+          } else {
+            throw new Error("Access denied by security rules");
+          }
+        } else if (err.code === 'unavailable') {
+          console.warn("Firestore offline: Using cached data");
+          const cachedSnap = await getDoc(doc(db, "users", firebaseUser.uid)).catch(() => null);
+          if (cachedSnap?.exists()) {
+            userData = cachedSnap.data();
+          }
+        } else {
+          console.error("Firestore error:", err);
+        }
+      }
+
+      const rawRole = customClaims.role || userData.role || 'user';
+      const role = normalizeRole(rawRole) as User['role'];
+      const features = customClaims.features || userData.features || {};
+      const isActive = customClaims.isActive !== false && userData.isActive !== false;
+
+      if (!isActive) {
+        console.warn("User account is not active - logging out");
+        await logout();
+        return null;
+      }
+
+      const processedUser: User = {
+        uid: firebaseUser.uid,
+        email: firebaseUser.email,
+        name: userData.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+        role,
+        features,
+        isActive,
+        emailVerified: firebaseUser.emailVerified,
+        createdAt: userData.createdAt || serverTimestamp(),
+        updatedAt: userData.updatedAt || serverTimestamp(),
+        lastVerificationSent: userData.lastVerificationSent || null,
+        settings: userData.settings || { theme: "light", language: "en", notifications: true },
+      };
+
+      if ((!userData.role || userData.role !== role || !userData.uid) && !claimsRecovered) {
+        console.log("Syncing user document with latest role:", role);
+        await syncUserDocument(firebaseUser.uid, processedUser);
+      }
+
+      console.log("✅ User processed successfully - Role:", role, "Is SuperAdmin:", checkIsSuperAdmin(role));
+      return processedUser;
+    } catch (error) {
+      console.error('❌ Error processing user:', error);
+      return null;
+    }
+  };
+
+  // === Initialize user document ===
+  const initializeUserDocument = async (firebaseUser: FirebaseUser, customClaims: any) => {
+    try {
+      const db = await getFirestore();
+      const rawRole = customClaims.role || 'user';
+      const role = normalizeRole(rawRole) as User['role'];
+      
+      const userData = {
+        uid: firebaseUser.uid,
+        email: firebaseUser.email,
+        name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+        role,
+        features: customClaims.features || {},
+        isActive: true,
+        emailVerified: firebaseUser.emailVerified,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        settings: { theme: "light", language: "en", notifications: true },
+      };
+
+      await setDoc(doc(db, "users", firebaseUser.uid), userData);
+    } catch (error: any) {
+      if (error.code === 'permission-denied') {
+        console.error("Firebase Rules blocked user document creation");
+      } else if (error.code !== 'unavailable') {
+        console.error("Failed to create user document:", error);
+      }
+    }
+  };
+
+  // === Sync user document ===
+  const syncUserDocument = async (userId: string, userData: User) => {
+    try {
+      const db = await getFirestore();
+      const cleanData: any = { 
+        ...userData, 
+        updatedAt: serverTimestamp() 
+      };
+      
+      Object.keys(cleanData).forEach((key) => {
+        if (cleanData[key] === undefined) delete cleanData[key];
       });
 
-      if (res.data.success && res.data.is_valid) {
-        console.log('🟢 [AuthContext] Session validation successful');
-        const processedUser = processUser({
-          ...res.data,
-          session_token: tokenToValidate,
-        });
-        setUser(processedUser);
-        setPermissions(res.data.permissions || []);
-        
-        if (res.data.session_token) {
-          localStorage.setItem("session_token", res.data.session_token);
-          setSessionToken(res.data.session_token);
-        }
-
-        // Store refresh token if provided
-        if (res.data.refresh_token) {
-          localStorage.setItem("refresh_token", res.data.refresh_token);
-        }
-        
-        return true;
-      } else {
-        console.log('🔴 [AuthContext] Session validation failed');
-        // Attempt token refresh before giving up
-        const refreshResult = await refreshAuthToken();
-        if (refreshResult.success) {
-          console.log('🟢 [AuthContext] Token refreshed, retrying validation...');
-          return await validateSession(refreshResult.token);
-        } else {
-          await enhancedLogout();
-          return false;
-        }
+      await setDoc(doc(db, "users", userId), cleanData, { merge: true });
+    } catch (error: any) {
+      if (error.code === 'permission-denied') {
+        console.error("Firebase Rules blocked user document sync");
+      } else if (error.code !== 'unavailable') {
+        console.error("Failed to sync user doc:", error);
       }
-    } catch (err: any) {
-      console.error('🔴 [AuthContext] Session validation error:', err);
-      
-      // Attempt token refresh on network errors
-      if (err.response?.status === 401 || err.code === 'NETWORK_ERROR') {
-        const refreshResult = await refreshAuthToken();
-        if (refreshResult.success) {
-          console.log('🟢 [AuthContext] Token refreshed after error, retrying...');
-          return await validateSession(refreshResult.token);
-        }
-      }
-      
-      await enhancedLogout();
-      return false;
-    } finally {
-      setLoading(false);
-      isValidating.current = false;
     }
   };
 
-  // ✅ FIXED: Optimized initialization with single execution
-  useEffect(() => {
-    // Prevent multiple initializations
-    if (hasInitialized.current) {
-      console.log('🟡 [AuthContext] Already initialized, skipping...');
-      setLoading(false);
-      setInitialized(true);
-      return;
-    }
-
-    hasInitialized.current = true;
-    let isInitializing = true;
+  // === RBAC Helpers ===
+  const hasRole = (role: string | string[]): boolean => {
+    if (!user?.role) return false;
     
-    const init = async () => {
-      console.log('🟡 [AuthContext] Initializing authentication...');
-      const storedToken = localStorage.getItem("session_token");
-      
-      if (storedToken && storedToken !== "undefined" && storedToken !== "null") {
-        await validateSession(storedToken);
-      } else {
-        console.log('🟡 [AuthContext] No stored session token found');
-        setLoading(false);
-      }
-      
-      if (isInitializing) {
-        setInitialized(true);
-        console.log('🟢 [AuthContext] Authentication initialized');
-      }
+    if (checkIsSuperAdmin(user.role)) return true;
+    
+    const rolesToCheck = Array.isArray(role) ? role : [role];
+    return rolesToCheck.some(r => normalizeRole(r) === user.role);
+  };
+
+  const hasAnyRole = (roles: string[]): boolean => {
+    if (!user?.role) return false;
+    if (checkIsSuperAdmin(user.role)) return true;
+    return roles.some(role => normalizeRole(role) === user.role);
+  };
+
+  const hasFeature = (feature: string): boolean => {
+    if (!user) return false;
+    if (checkIsSuperAdmin(user.role)) return true;
+    return user.features[feature as keyof User['features']] === true;
+  };
+
+  const canPerform = (action: string): boolean => {
+    if (!user?.role) return false;
+    
+    const perms: Record<string, string[]> = {
+      superadmin: ['read', 'write', 'create', 'delete', 'manage', 'approve', 'export', 'override', 'configure'],
+      manager: ['read', 'write', 'create', 'approve', 'export', 'manage'],
+      worker: ['read', 'write', 'create'],
+      buyer: ['read', 'create'],
+      supplier: ['read', 'update'],
+      user: ['read'],
     };
     
-    init();
+    return (perms[user.role] || ['read']).includes(action);
+  };
+
+  const hasPermission = (featureCode: string, action: string = 'view'): boolean => {
+    if (!user) return false;
     
-    return () => {
-      isInitializing = false;
-      isMounted.current = false;
+    if (checkIsSuperAdmin(user.role)) return true;
+    
+    const hasAccess = user.features[featureCode as keyof User['features']] === true;
+    if (!hasAccess) return false;
+    
+    const perms: Record<string, string[]> = {
+      superadmin: ['read', 'write', 'create', 'delete', 'manage', 'approve', 'export', 'override', 'configure', 'view'],
+      manager: ['read', 'write', 'create', 'approve', 'export', 'manage', 'view'],
+      worker: ['read', 'write', 'create', 'view'],
+      buyer: ['read', 'create', 'view'],
+      supplier: ['read', 'update', 'view'],
+      user: ['read', 'view'],
     };
-  }, []);
-
-  // ✅ ENHANCED login function with refresh token handling
-  const login = async (
-    username: string,
-    password: string,
-    mfaCode?: string,
-    ip_address?: string,
-    user_agent?: string
-  ): Promise<LoginResponse> => {
-    setIsLoggingIn(true);
-    setLoading(true);
     
-    try {
-      const payload: any = {
-        username: username.trim(),
-        password: password.trim(),
-        user_agent: user_agent || navigator.userAgent,
-      };
-      
-      if (mfaCode) {
-        payload.mfa_code = mfaCode;
-      }
+    return (perms[user.role] || ['read', 'view']).includes(action);
+  };
 
-      console.log('🟡 [AuthContext] Attempting login...');
-      const res = await api.post(`${BASE_API_URL}/auth/login`, payload);
-
-      if (res.data.success && res.data.user) {
-        console.log('🟢 [AuthContext] Login successful');
-        const processedUser = processUser(res.data.user);
+  const refreshUserClaims = async (): Promise<void> => {
+    if (firebaseUser) {
+      console.log("🔄 Refreshing user claims...");
+      try {
+        await firebaseUser.getIdToken(true);
+        await new Promise(resolve => setTimeout(resolve, 2000));
         
-        // Store both access and refresh tokens
-        localStorage.setItem("session_token", processedUser.session_token);
-        if (res.data.refresh_token) {
-          localStorage.setItem("refresh_token", res.data.refresh_token);
+        const processed = await processFirebaseUser(firebaseUser);
+        if (processed) {
+          setUser(processed);
         }
-        
-        setSessionToken(processedUser.session_token);
-        setUser(processedUser);
-        setPermissions(res.data.user.permissions || []);
-        
-        const redirectPath = getRedirectPath(processedUser);
-        console.log(`🟢 [AuthContext] Redirecting to: ${redirectPath}`);
-        navigate(redirectPath, { replace: true });
-        
-        return { 
-          success: true, 
-          user: res.data.user 
-        };
-      } else if (res.data.requiresMFA) {
-        console.log('🟡 [AuthContext] MFA required');
-        return { 
-          success: false, 
-          requiresMFA: true,
-          email: res.data.email,
-          message: res.data.message || "MFA verification required"
-        };
-      } else {
-        console.log('🔴 [AuthContext] Login failed:', res.data.message);
-        return { 
-          success: false, 
-          message: res.data.message || "Login failed",
-          requiresMFA: res.data.requiresMFA,
-          email: res.data.email
-        };
+      } catch (error) {
+        console.error("❌ Failed to refresh user claims:", error);
       }
-    } catch (err: any) {
-      console.error('🔴 [AuthContext] Login error:', err);
-      const errorResponse = err.response?.data;
-      return { 
-        success: false, 
-        message: errorResponse?.message || err.message || "Login failed due to network error" 
-      };
+    }
+  };
+
+  // === Fixed isSuperAdmin calculation ===
+  const isSuperAdmin = user ? checkIsSuperAdmin(user.role) : false;
+  const isAuthenticated = !!user && user.isActive;
+
+  const getRedirectPath = (role?: string): string => {
+    const r = role || user?.role;
+    const paths: Record<string, string> = {
+      superadmin: "/superadmin/dashboard",
+      super_admin: "/superadmin/dashboard",
+      manager: "/manager/dashboard",
+      worker: "/worker/dashboard",
+      buyer: "/buyer/dashboard",
+      supplier: "/supplier/dashboard",
+    };
+    return paths[r || ''] || "/dashboard";
+  };
+
+  // === Enhanced Login with detailed logging ===
+  const login = async (email: string, password: string): Promise<LoginResponse> => {
+    setIsLoggingIn(true);
+    try {
+      console.log('🔐 Login attempt for:', email);
+      
+      const auth = await getAuth();
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      
+      console.log('✅ Firebase auth success, UID:', userCredential.user.uid);
+      
+      // Get initial claims
+      const initialToken = await userCredential.user.getIdTokenResult(false);
+      console.log('🔑 Initial claims:', initialToken.claims);
+      
+      // Force token refresh to get latest claims
+      console.log('🔄 Forcing token refresh...');
+      const refreshedToken = await refreshAuthToken(userCredential.user);
+      console.log('🔑 Refreshed claims:', refreshedToken.claims);
+      
+      const processedUser = await processFirebaseUser(userCredential.user);
+      
+      if (processedUser) {
+        console.log('✅ Processed user role:', processedUser.role);
+        console.log('✅ Is superadmin?', checkIsSuperAdmin(processedUser.role));
+        
+        setUser(processedUser);
+        
+        const redirectPath = getRedirectPath(processedUser.role);
+        console.log('📍 Redirecting to:', redirectPath);
+        
+        navigate(redirectPath, { replace: true });
+        return { success: true, user: processedUser };
+      }
+      
+      console.log('❌ Failed to process user');
+      return { success: false, message: "Failed to load user data" };
+      
+    } catch (error: any) {
+      console.error('❌ Login error:', error);
+      
+      if (error.code === 'permission-denied') {
+        return { success: false, message: "Access denied by security rules" };
+      }
+      
+      return { success: false, message: error.message || "Login failed" };
     } finally {
-      setLoading(false);
       setIsLoggingIn(false);
     }
   };
 
-  // ✅ PRODUCTION-READY register function
-  const registerUser = async (
-    full_name: string,
-    email: string,
-    password: string,
-    role_name: string,
-    ip_address?: string,
-    user_agent?: string
-  ): Promise<RegisterResponse> => {
-    setLoading(true);
+  // === Register with Firebase Rules compliance ===
+  const registerUser = async (name: string, email: string, password: string, role: string): Promise<RegisterResponse> => {
     try {
-      const payload = {
-        full_name,
-        email,
-        password,
-        role_name,
-        ip_address: ip_address || "unknown",
-        user_agent: user_agent || navigator.userAgent,
-      };
-
-      const res = await api.post(`${BASE_API_URL}/auth/register`, payload);
+      const auth = await getAuth();
+      const db = await getFirestore();
       
-      if (res.data.success) {
-        return { 
-          success: true, 
-          user_id: res.data.user_id,
-          username: res.data.username,
-          email: res.data.email,
-          full_name: res.data.full_name,
-          role_id: res.data.role_id,
-          role_name: res.data.role_name,
-          is_active: res.data.is_active,
-          created_at: res.data.created_at,
-          email_verified: res.data.email_verified
-        };
-      } else {
-        return { success: false, message: res.data.message };
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const firebaseUser = userCredential.user;
+      await updateProfile(firebaseUser, { displayName: name });
+
+      const normalizedRole = normalizeRole(role) as User['role'];
+      
+      const userData = {
+        uid: firebaseUser.uid,
+        name, 
+        email, 
+        role: normalizedRole, 
+        features: {}, 
+        isActive: true,
+        emailVerified: false, 
+        settings: { theme: "light", language: "en", notifications: true },
+        createdAt: serverTimestamp(), 
+        updatedAt: serverTimestamp()
+      };
+
+      await setDoc(doc(db, "users", firebaseUser.uid), userData);
+
+      try {
+        const { getFunctions } = await import('firebase/functions');
+        const functions = getFunctions();
+        const setUserRole = httpsCallable(functions, 'setUserRoleAndFeatures');
+        
+        await setUserRole({ 
+          targetUserId: firebaseUser.uid, 
+          role: normalizedRole, 
+          features: {} 
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        await firebaseUser.getIdToken(true);
+        
+      } catch (err) {
+        console.warn("Cloud function unavailable - claims may not be set immediately:", err);
       }
-    } catch (err: any) {
-      return { 
-        success: false, 
-        message: err.response?.data?.message || "Registration failed" 
+
+      const verificationResult = await EmailVerificationService.sendVerificationEmail();
+      if (verificationResult.success) {
+        await updateDoc(doc(db, "users", firebaseUser.uid), { 
+          lastVerificationSent: serverTimestamp() 
+        });
+      }
+
+      const processedUser = await processFirebaseUser(firebaseUser);
+      
+      if (!processedUser) {
+        return { 
+          success: false, 
+          message: "User created but failed to load user data. Please refresh the page." 
+        };
+      }
+
+      return {
+        success: true,
+        user: processedUser,
+        message: verificationResult.success
+          ? 'Please check your email for verification.'
+          : 'Registered, but verification email failed.'
       };
+    } catch (error: any) {
+      console.error('Registration error:', error);
+      
+      if (error.code === 'permission-denied') {
+        return { success: false, message: "Registration not permitted by security rules" };
+      }
+      
+      return { success: false, message: error.message || "Registration failed" };
+    }
+  };
+
+  // === Logout ===
+  const logout = async (): Promise<void> => {
+    try {
+      const auth = await getAuth();
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout error:", error);
     } finally {
-      setLoading(false);
+      setUser(null);
+      setFirebaseUser(null);
+      navigate("/login", { replace: true });
     }
   };
 
-  // ✅ ULTIMATE PERMISSION CHECKING - SUPER_ADMIN has ALL permissions
-  const hasPermission = (feature_code: string, required_permission: string = 'view'): boolean => {
-    if (!user) return false;
-    
-    // ✅ SUPER_ADMIN has ALL permissions - NO RESTRICTIONS
-    if (isSuperAdminUser) {
-      return true;
-    }
-
-    const permission = permissions.find(p => p.feature_code === feature_code);
-    if (!permission) return false;
-
-    switch (required_permission) {
-      case 'view': return permission.can_view;
-      case 'create': return permission.can_create;
-      case 'edit': return permission.can_edit;
-      case 'delete': return permission.can_delete;
-      case 'export': return permission.can_export;
-      default: return permission.can_view;
-    }
-  };
-
-  const canAccessFeature = (feature_code: string, required_permission: string = 'view'): boolean => {
-    return hasPermission(feature_code, required_permission);
-  };
-
-  // ✅ Additional auth functions (optimized for production)
-  const refreshSession = async (): Promise<boolean> => {
-    // ✅ SUPER_ADMIN bypass - no refresh needed
-    if (isSuperAdminUser) {
-      return true;
-    }
-    return await validateSession(sessionToken);
-  };
-
-  const getPermissions = async (): Promise<Permission[]> => {
-    return permissions;
-  };
-
-  const updateUserSettings = (settings: Partial<User["settings"]>): void => {
-    if (user) {
-      const updatedUser = {
-        ...user,
-        settings: { ...user.settings, ...settings }
-      };
-      setUser(updatedUser);
-    }
-  };
-
-  const changePassword = async (
-    currentPassword: string,
-    newPassword: string
-  ): Promise<{ success: boolean; message?: string }> => {
+  // === Session Validation ===
+  const validateSession = async (): Promise<boolean> => {
+    if (!firebaseUser) return false;
     try {
-      const res = await api.post(`${BASE_API_URL}/auth/change-password`, {
-        current_password: currentPassword,
-        new_password: newPassword
-      });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
+      await refreshAuthToken(firebaseUser);
+      return true;
+    } catch {
+      await logout();
+      return false;
     }
   };
 
-  const checkFeatureAccess = async (
-    feature_code: string,
-    required_permission: string = 'view'
-  ): Promise<{ success: boolean; has_access: boolean }> => {
-    return {
-      success: true,
-      has_access: hasPermission(feature_code, required_permission)
+  // === Update User Settings ===
+  const updateUserSettings = async (settings: Partial<User["settings"]>) => {
+    if (!user) return;
+    const updated = { ...user.settings, ...settings };
+    try {
+      const db = await getFirestore();
+      await updateDoc(doc(db, "users", user.uid), { 
+        settings: updated, 
+        updatedAt: serverTimestamp() 
+      });
+      setUser(prev => prev ? { ...prev, settings: updated } : null);
+    } catch (err: any) {
+      if (err.code === 'permission-denied') {
+        console.error("Firebase Rules blocked settings update");
+        throw new Error("Permission denied to update settings");
+      } else if (err.code !== 'unavailable') {
+        throw err;
+      }
+    }
+  };
+
+  // === Password Change ===
+  const changePassword = async (currentPassword: string, newPassword: string) => {
+    if (!firebaseUser?.email) return { success: false, message: "Not authenticated" };
+    try {
+      const credential = EmailAuthProvider.credential(firebaseUser.email, currentPassword);
+      await reauthenticateWithCredential(firebaseUser, credential);
+      await updatePassword(firebaseUser, newPassword);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, message: error.message };
+    }
+  };
+
+  // === Password Reset ===
+  const requestPasswordReset = (email: string) => PasswordResetService.sendPasswordResetEmail(email);
+  const resetPassword = (token: string, newPassword: string) => PasswordResetService.confirmPasswordReset(token, newPassword);
+
+  // === Email Verification ===
+  const sendEmailVerification = async () => {
+    const result = await EmailVerificationService.sendVerificationEmail();
+    if (result.success && user) {
+      try {
+        const db = await getFirestore();
+        await updateDoc(doc(db, "users", user.uid), { 
+          lastVerificationSent: serverTimestamp() 
+        });
+        setUser(prev => prev ? { ...prev, lastVerificationSent: new Date() } : null);
+      } catch (err: any) {
+        if (err.code !== 'unavailable') console.error(err);
+      }
+    }
+    return result;
+  };
+
+  const resendVerificationEmail = async () => {
+    const lastSent = user?.lastVerificationSent ? new Date(user.lastVerificationSent).getTime() : undefined;
+    const result = await EmailVerificationService.resendVerificationEmail(lastSent);
+    if (result.success && user) {
+      try {
+        const db = await getFirestore();
+        await updateDoc(doc(db, "users", user.uid), { 
+          lastVerificationSent: serverTimestamp() 
+        });
+        setUser(prev => prev ? { ...prev, lastVerificationSent: new Date() } : null);
+      } catch (err: any) {
+        if (err.code !== 'unavailable') console.error(err);
+      }
+    }
+    return result;
+  };
+
+  const checkEmailVerification = () => EmailVerificationService.isEmailVerified();
+
+  // === Reload User ===
+  const reloadUser = async () => {
+    if (!firebaseUser) return;
+    await firebaseUser.reload();
+    const processed = await processFirebaseUser(firebaseUser);
+    if (processed) setUser(processed);
+  };
+
+  // === Optimized Auth State Listener ===
+  useEffect(() => {
+    console.log("Setting up Firebase Auth listener...");
+
+    let unsubscribe = () => {};
+    let mounted = true;
+
+    const initializeAuthListener = async () => {
+      try {
+        const auth = await getAuth();
+        
+        unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+          if (!mounted) return;
+          
+          setFirebaseUser(firebaseUser);
+
+          if (firebaseUser) {
+            try {
+              const processedUser = await processFirebaseUser(firebaseUser);
+              if (processedUser) {
+                setUser(processedUser);
+              } else {
+                setUser(null);
+              }
+            } catch (error) {
+              console.error("❌ Error in auth state change:", error);
+              setUser(null);
+            }
+          } else {
+            setUser(null);
+          }
+
+          setLoading(false);
+          setInitialized(true);
+        });
+      } catch (error) {
+        console.error("Failed to initialize auth listener:", error);
+        setLoading(false);
+        setInitialized(true);
+      }
     };
-  };
 
-  const getCurrentUser = async (): Promise<User | null> => {
-    return user;
-  };
+    initializeAuthListener();
 
-  const checkAvailability = async (
-    email?: string,
-    username?: string
-  ): Promise<{ success: boolean; exists: boolean }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/check-availability`, {
-        email,
-        username
-      });
-      return { success: true, exists: res.data.exists };
-    } catch (err: any) {
-      return { success: false, exists: false };
-    }
-  };
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
-  const getRoles = async (): Promise<{
-    success: boolean;
-    roles: Array<{ id: number; name: string; description: string }>;
-  }> => {
-    try {
-      const res = await api.get(`${BASE_API_URL}/auth/roles`);
-      return { success: true, roles: res.data.roles };
-    } catch (err: any) {
-      return { success: false, roles: [] };
-    }
-  };
+  // === Firestore Sync Status ===
+  useEffect(() => {
+    let unsubscribe = () => {};
+    
+    const setupSyncListener = async () => {
+      try {
+        const db = await getFirestore();
+        unsubscribe = onSnapshotsInSync(db, () => {
+          console.log("Firestore: All snapshots in sync");
+        });
+      } catch (error) {
+        console.error("Failed to setup sync listener:", error);
+      }
+    };
 
-  const resendVerification = async (
-    email: string
-  ): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/resend-verification`, { email });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
-    }
-  };
+    setupSyncListener();
+    
+    return () => unsubscribe();
+  }, []);
 
-  const verifyEmail = async (token: string): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/verify-email`, { token });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
-    }
-  };
-
-  const requestPasswordReset = async (email: string): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/request-password-reset`, { email });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
-    }
-  };
-
-  const resetPassword = async (token: string, newPassword: string): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/reset-password`, { token, new_password: newPassword });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
-    }
-  };
-
-  const enableMFA = async (): Promise<{ success: boolean; secret?: string; qrCode?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/enable-mfa`);
-      return { 
-        success: res.data.success, 
-        secret: res.data.secret, 
-        qrCode: res.data.qr_code 
-      };
-    } catch (err: any) {
-      return { success: false };
-    }
-  };
-
-  const verifyMFA = async (token: string): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/verify-mfa`, { token });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
-    }
-  };
-
-  const disableMFA = async (password: string): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await api.post(`${BASE_API_URL}/auth/disable-mfa`, { password });
-      return { success: res.data.success, message: res.data.message };
-    } catch (err: any) {
-      return { success: false, message: err.response?.data?.message };
-    }
-  };
-
-  // Compute derived values
-  const role = user?.role_name || (user?.role_id === 1 ? "SUPER_ADMIN" : null);
-
+  // === Context Value ===
   const value: AuthContextProps = {
     user,
-    sessionToken,
+    firebaseUser,
     loading,
     initialized,
     isAuthenticated,
-    permissions,
     isLoggingIn,
-    isSuperAdmin: isSuperAdminUser,
-    role,
+    isSuperAdmin,
+    role: user?.role || null,
+    isOnline,
+    authReady,
     login,
     registerUser,
-    resendVerification,
-    logout: enhancedLogout, // ✅ Use the enhanced logout function
+    logout,
     validateSession,
-    getPermissions,
-    hasPermission,
-    canAccessFeature,
-    getRedirectPath,
-    refreshSession,
     updateUserSettings,
     changePassword,
-    checkFeatureAccess,
-    getCurrentUser,
-    checkAvailability,
-    getRoles,
-    verifyEmail,
     requestPasswordReset,
     resetPassword,
-    enableMFA,
-    verifyMFA,
-    disableMFA,
+    sendEmailVerification,
+    resendVerificationEmail,
+    checkEmailVerification,
+    reloadUser,
+    hasRole,
+    hasAnyRole,
+    hasFeature,
+    canPerform,
+    hasPermission,
+    refreshUserClaims,
+    debugLogin,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

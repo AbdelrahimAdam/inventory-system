@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import React, { createContext, useContext, useState, ReactNode, useEffect } from "react";
 
 interface SidebarContextProps {
   isMobile: boolean;
@@ -9,21 +9,43 @@ interface SidebarContextProps {
 
 const SidebarContext = createContext<SidebarContextProps | undefined>(undefined);
 
-export const SidebarProvider = ({ children }: { children: ReactNode }) => {
+export const SidebarProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const isMobile = window.innerWidth <= 768;
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= 768);
+      // Auto-close sidebar on mobile when resizing to larger screen
+      if (window.innerWidth > 768 && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [sidebarOpen]);
 
   const toggleSidebar = () => setSidebarOpen(prev => !prev);
 
+  const value: SidebarContextProps = {
+    isMobile,
+    toggleSidebar,
+    sidebarOpen,
+    setSidebarOpen
+  };
+
   return (
-    <SidebarContext.Provider value={{ isMobile, toggleSidebar, sidebarOpen, setSidebarOpen }}>
+    <SidebarContext.Provider value={value}>
       {children}
     </SidebarContext.Provider>
   );
 };
 
-export const useSidebar = () => {
+export const useSidebar = (): SidebarContextProps => {
   const context = useContext(SidebarContext);
-  if (!context) throw new Error("useSidebar must be used within a SidebarProvider");
+  if (!context) {
+    throw new Error("useSidebar must be used within a SidebarProvider");
+  }
   return context;
 };

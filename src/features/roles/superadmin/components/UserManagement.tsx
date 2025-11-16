@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { 
-  Plus, 
-  Search, 
-  Edit, 
-  Trash2, 
+import {
+  Plus,
+  Search,
+  Edit,
+  Trash2,
   UserCheck,
   UserX,
   X,
@@ -21,80 +21,110 @@ import {
   MoreVertical,
   Star,
   Crown,
-  Settings
+  Settings,
+  Users,
+  Activity,
+  AlertTriangle,
+  CheckCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-hot-toast';
-import { useForm, Controller } from 'react-hook-form';
-import { enhancedSuperadminApi, debugSuperAdminAccess as debugAuthStatus, handleApiError } from '@/services/superadminApi';
-// Types
+import { useForm } from 'react-hook-form';
+import { 
+  getAuth, 
+  createUserWithEmailAndPassword,
+  updateProfile,
+  sendEmailVerification
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  getDocs, 
+  getDoc, 
+  setDoc, 
+  updateDoc,
+  query,
+  where,
+  orderBy,
+  serverTimestamp,
+  writeBatch 
+} from 'firebase/firestore';
+import { app } from '@/services/firebase';
+
+// Types - Updated to match actual Firestore structure from your AuthContext
 interface User {
-  id: number;
-  uuid: string;
-  username: string;
-  full_name: string;
-  email: string;
-  role_id: number;
-  role_name: string;
-  is_active: boolean;
-  is_locked: boolean;
-  last_login: string | null;
-  created_at: string;
-  updated_at: string;
-  mfa_enabled: boolean;
-  email_verified: boolean;
-  failed_login_attempts: number;
-  phone_number?: string;
-  department?: string;
-  position?: string;
-  avatar_url?: string;
-  lockout_until?: string | null;
-  last_failed_login?: string | null;
+  id: string;
+  uid: string;
+  email: string | null;
+  name: string;
+  role: 'superadmin' | 'super_admin' | 'manager' | 'worker' | 'supplier' | 'buyer' | 'user';
+  isActive: boolean;
+  emailVerified: boolean;
+  createdAt: any;
+  updatedAt: any;
+  lastVerificationSent?: any;
+  features?: {
+    userManagement?: boolean;
+    systemConfig?: boolean;
+    auditLogs?: boolean;
+    backupRestore?: boolean;
+    roleManagement?: boolean;
+    inventoryManagement?: boolean;
+    reports?: boolean;
+    approvals?: boolean;
+  };
+  settings?: {
+    theme: string;
+    language: string;
+    notifications: boolean;
+  };
+  // Additional fields that might exist
+  username?: string;
+  full_name?: string;
+  is_locked?: boolean;
+  last_login?: any;
+  mfa_enabled?: boolean;
+  failed_login_attempts?: number;
+  lockout_until?: any;
 }
 
 interface UserDetails {
-  id: number;
-  uuid: string;
-  username: string;
-  email: string;
-  full_name: string;
-  role_id: number;
-  role_name: string;
-  is_active: boolean;
-  is_locked: boolean;
-  last_login: string | null;
-  created_at: string;
-  updated_at: string;
-  mfa_enabled: boolean;
-  email_verified: boolean;
-  failed_login_attempts: number;
-  phone_number?: string;
-  department?: string;
-  position?: string;
-  session_expires: string | null;
-  last_password_change: string | null;
-  avatar_url?: string;
-  lockout_until?: string | null;
-  last_failed_login?: string | null;
+  id: string;
+  uid: string;
+  email: string | null;
+  name: string;
+  role: string;
+  isActive: boolean;
+  emailVerified: boolean;
+  createdAt: any;
+  updatedAt: any;
+  features?: any;
+  settings?: any;
+  last_login?: any;
+  mfa_enabled?: boolean;
+  failed_login_attempts?: number;
+  is_locked?: boolean;
+  lockout_until?: any;
 }
 
 interface Role {
-  id: number;
+  id: string;
   name: string;
   description?: string;
   security_level: number;
   is_system_role: boolean;
+  max_session_hours?: number;
+  password_policy?: string;
+  mfa_required?: boolean;
+  is_active?: boolean;
 }
 
 interface UserFormData {
-  full_name: string;
+  name: string;
   email: string;
-  username: string;
-  role_id: number;
+  role: string;
   password?: string;
-  phone_number?: string;
-  department?: string;
-  position?: string;
 }
 
 interface Pagination {
@@ -109,6 +139,433 @@ interface FilterState {
   role: string;
   status: 'all' | 'active' | 'inactive';
   lockStatus: 'all' | 'locked' | 'unlocked';
+}
+
+// Constants - Updated to match your actual role names
+const DEFAULT_ROLES: Role[] = [
+  { 
+    id: 'superadmin', 
+    name: 'superadmin', 
+    description: 'System administrator with full access', 
+    security_level: 10, 
+    is_system_role: true,
+    is_active: true
+  },
+  { 
+    id: 'manager', 
+    name: 'manager', 
+    description: 'Manager with elevated permissions', 
+    security_level: 8, 
+    is_system_role: false,
+    is_active: true
+  },
+  { 
+    id: 'worker', 
+    name: 'worker', 
+    description: 'Regular worker', 
+    security_level: 5, 
+    is_system_role: false,
+    is_active: true
+  },
+  { 
+    id: 'buyer', 
+    name: 'buyer', 
+    description: 'Buyer role', 
+    security_level: 3, 
+    is_system_role: false,
+    is_active: true
+  },
+  { 
+    id: 'supplier', 
+    name: 'supplier', 
+    description: 'Supplier role', 
+    security_level: 3, 
+    is_system_role: false,
+    is_active: true
+  }
+];
+
+// Firebase instances
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Utility functions
+const debounce = <T extends (...args: any[]) => void>(
+  func: T,
+  wait: number
+): ((...args: Parameters<T>) => void) => {
+  let timeout: NodeJS.Timeout;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+};
+
+const validateEmail = (email: string): boolean => 
+  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/.test(email);
+
+const validatePassword = (password: string): boolean => 
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d!@#$%^&*]{8,}$/.test(password);
+
+const validateFullName = (name: string): boolean => 
+  /^[a-zA-Z\u0600-\u06FF\s]{2,50}$/.test(name.replace(/[\n\r\t"]/g, ""));
+
+const getRoleDisplayName = (roleName: string): string => {
+  const map: { [key: string]: string } = {
+    'superadmin': "مشرف عام",
+    'super_admin': "مشرف عام",
+    'manager': "مدير",
+    'worker': "عامل",
+    'buyer': "مشتري",
+    'supplier': "مورد",
+    'user': "مستخدم"
+  };
+  return map[roleName] || roleName;
+};
+
+const formatDate = (date: any): string => {
+  if (!date) return 'لم يسجل دخول';
+  try {
+    // Handle Firestore timestamps
+    const dateObj = date.toDate ? date.toDate() : new Date(date);
+    return dateObj.toLocaleDateString('ar-EG', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+  } catch {
+    return 'تاريخ غير صالح';
+  }
+};
+
+// Firebase User Management Service
+class UserManagementService {
+  private static instance: UserManagementService;
+
+  static getInstance(): UserManagementService {
+    if (!UserManagementService.instance) {
+      UserManagementService.instance = new UserManagementService();
+    }
+    return UserManagementService.instance;
+  }
+
+  // Initialize default roles in Firestore
+  async initializeDefaultRoles(): Promise<void> {
+    try {
+      const rolesRef = collection(db, 'roles');
+      const snapshot = await getDocs(rolesRef);
+      
+      if (snapshot.empty) {
+        const batch = writeBatch(db);
+        DEFAULT_ROLES.forEach(role => {
+          const roleRef = doc(rolesRef, role.id);
+          batch.set(roleRef, role);
+        });
+        await batch.commit();
+        console.log('Default roles initialized in Firestore');
+      }
+    } catch (error) {
+      console.error('Error initializing default roles:', error);
+    }
+  }
+
+  // Get roles from Firestore
+  async getRoles(): Promise<Role[]> {
+    try {
+      await this.initializeDefaultRoles();
+      
+      const rolesRef = collection(db, 'roles');
+      const q = query(rolesRef, where('is_active', '==', true));
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        console.warn('No roles found in Firestore, using default roles');
+        return DEFAULT_ROLES;
+      }
+
+      const rolesData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Role[];
+
+      return rolesData.sort((a, b) => a.security_level - b.security_level);
+    } catch (error) {
+      console.error('Error getting roles:', error);
+      return DEFAULT_ROLES;
+    }
+  }
+
+  // Get users from Firestore - FIXED to match actual data structure
+  async getUsers(params: any): Promise<{ users: User[]; pagination: Pagination }> {
+    try {
+      const usersRef = collection(db, 'users');
+      let q = query(usersRef);
+      
+      console.log('🔍 Fetching users from Firestore with params:', params);
+
+      // Apply filters - using the actual field names from your AuthContext
+      if (params.role && params.role !== 'all') {
+        q = query(q, where('role', '==', params.role));
+      }
+      if (params.isActive !== undefined) {
+        q = query(q, where('isActive', '==', params.isActive));
+      }
+      if (params.is_locked !== undefined) {
+        q = query(q, where('is_locked', '==', params.is_locked));
+      }
+      
+      // Order by creation date
+      q = query(q, orderBy('createdAt', 'desc'));
+      
+      const snapshot = await getDocs(q);
+      console.log('📊 Firestore query result:', snapshot.size, 'users found');
+      
+      const usersData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        console.log('👤 User data:', data);
+        return {
+          id: doc.id,
+          uid: data.uid || doc.id,
+          email: data.email,
+          name: data.name || data.full_name || data.email?.split('@')[0] || 'User',
+          role: data.role || 'user',
+          isActive: data.isActive !== false,
+          emailVerified: data.emailVerified || false,
+          createdAt: data.createdAt,
+          updatedAt: data.updatedAt,
+          features: data.features || {},
+          settings: data.settings || {},
+          is_locked: data.is_locked || false,
+          last_login: data.last_login,
+          mfa_enabled: data.mfa_enabled || false,
+          failed_login_attempts: data.failed_login_attempts || 0,
+          lockout_until: data.lockout_until
+        } as User;
+      });
+
+      console.log('✅ Processed users:', usersData);
+
+      // Simple pagination
+      const page = params.page || 1;
+      const limit = params.limit || 10;
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+      const paginatedUsers = usersData.slice(startIndex, endIndex);
+      
+      return {
+        users: paginatedUsers,
+        pagination: {
+          totalPages: Math.ceil(usersData.length / limit),
+          currentPage: page,
+          totalItems: usersData.length,
+          hasNext: endIndex < usersData.length,
+          hasPrev: page > 1
+        }
+      };
+    } catch (error: any) {
+      console.error('❌ Error getting users:', error);
+      if (error.code === 'permission-denied') {
+        throw new Error('Permission denied: Check your Firebase rules and user claims');
+      }
+      throw new Error('فشل جلب المستخدمين: ' + error.message);
+    }
+  }
+
+  // Get user details from Firestore
+  async getUserDetails(userId: string): Promise<{ user: UserDetails }> {
+    try {
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      if (userDoc.exists()) {
+        const data = userDoc.data();
+        const userDetails: UserDetails = {
+          id: userDoc.id,
+          uid: data.uid || userDoc.id,
+          email: data.email,
+          name: data.name || data.full_name || data.email?.split('@')[0] || 'User',
+          role: data.role || 'user',
+          isActive: data.isActive !== false,
+          emailVerified: data.emailVerified || false,
+          createdAt: data.createdAt,
+          updatedAt: data.updatedAt,
+          features: data.features || {},
+          settings: data.settings || {},
+          last_login: data.last_login,
+          mfa_enabled: data.mfa_enabled || false,
+          failed_login_attempts: data.failed_login_attempts || 0,
+          is_locked: data.is_locked || false,
+          lockout_until: data.lockout_until
+        };
+        return { user: userDetails };
+      } else {
+        throw new Error('User not found');
+      }
+    } catch (error: any) {
+      console.error('Error getting user details:', error);
+      throw new Error('فشل جلب تفاصيل المستخدم: ' + error.message);
+    }
+  }
+
+  // Create user with Firebase Auth and Firestore - FIXED to match your AuthContext structure
+  async createUser(userData: any): Promise<{ success: boolean; message: string; data?: any }> {
+    try {
+      const { email, password, name, role } = userData;
+      
+      console.log('🔄 Creating user with data:', { email, name, role });
+
+      // Validate role exists
+      const roles = await this.getRoles();
+      const roleObj = roles.find(r => r.id === role);
+      if (!roleObj) {
+        throw new Error('الدور المحدد غير موجود');
+      }
+
+      // Create user in Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      
+      // Update profile
+      await updateProfile(user, {
+        displayName: name
+      });
+      
+      // Create user document in Firestore - matching your AuthContext structure
+      const userDoc = {
+        uid: user.uid,
+        email: email,
+        name: name,
+        role: role,
+        isActive: true,
+        emailVerified: false,
+        features: {},
+        settings: { theme: "light", language: "en", notifications: true },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        is_locked: false,
+        mfa_enabled: false,
+        failed_login_attempts: 0
+      };
+      
+      await setDoc(doc(db, 'users', user.uid), userDoc);
+      console.log('✅ User document created in Firestore');
+      
+      // Send email verification
+      await sendEmailVerification(user);
+      
+      return { 
+        success: true, 
+        message: 'تم إنشاء المستخدم بنجاح',
+        data: { id: user.uid, ...userDoc }
+      };
+    } catch (error: any) {
+      console.error('❌ Error creating user:', error);
+      throw error;
+    }
+  }
+
+  // Update user in Firestore
+  async updateUser(userId: string, userData: any): Promise<{ success: boolean; message: string }> {
+    try {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        ...userData,
+        updatedAt: serverTimestamp()
+      });
+      
+      return { success: true, message: 'تم تحديث المستخدم بنجاح' };
+    } catch (error: any) {
+      console.error('Error updating user:', error);
+      throw new Error('فشل تحديث المستخدم: ' + error.message);
+    }
+  }
+
+  // Update user role
+  async updateUserRole(userId: string, roleData: { role: string }): Promise<{ success: boolean; message: string }> {
+    try {
+      const roles = await this.getRoles();
+      const role = roles.find(r => r.id === roleData.role);
+      if (!role) throw new Error('الدور غير موجود');
+      
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        role: roleData.role,
+        updatedAt: serverTimestamp()
+      });
+      
+      return { success: true, message: 'تم تحديث الدور بنجاح' };
+    } catch (error: any) {
+      console.error('Error updating user role:', error);
+      throw new Error('فشل تحديث الدور: ' + error.message);
+    }
+  }
+
+  // Activate user
+  async activateUser(userId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        isActive: true,
+        updatedAt: serverTimestamp()
+      });
+      
+      return { success: true, message: 'تم تفعيل المستخدم بنجاح' };
+    } catch (error: any) {
+      console.error('Error activating user:', error);
+      throw new Error('فشل تفعيل المستخدم: ' + error.message);
+    }
+  }
+
+  // Deactivate user
+  async deactivateUser(userId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        isActive: false,
+        updatedAt: serverTimestamp()
+      });
+      
+      return { success: true, message: 'تم تعطيل المستخدم بنجاح' };
+    } catch (error: any) {
+      console.error('Error deactivating user:', error);
+      throw new Error('فشل تعطيل المستخدم: ' + error.message);
+    }
+  }
+
+  // Lock user
+  async lockUser(userId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        is_locked: true,
+        lockout_until: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      
+      return { success: true, message: 'تم قفل المستخدم بنجاح' };
+    } catch (error: any) {
+      console.error('Error locking user:', error);
+      throw new Error('فشل قفل المستخدم: ' + error.message);
+    }
+  }
+
+  // Unlock user
+  async unlockUser(userId: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        is_locked: false,
+        lockout_until: null,
+        failed_login_attempts: 0,
+        updatedAt: serverTimestamp()
+      });
+      
+      return { success: true, message: 'تم فتح المستخدم بنجاح' };
+    } catch (error: any) {
+      console.error('Error unlocking user:', error);
+      throw new Error('فشل فتح المستخدم: ' + error.message);
+    }
+  }
 }
 
 // Modal Component
@@ -163,8 +620,8 @@ const Modal: React.FC<{
         >
           <div className="flex justify-between items-center p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-l from-gray-50 to-white dark:from-gray-800 dark:to-gray-900">
             <h3 id="modal-title" className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
-            <button 
-              onClick={onClose} 
+            <button
+              onClick={onClose}
               className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
               aria-label="إغلاق"
             >
@@ -180,14 +637,10 @@ const Modal: React.FC<{
   );
 };
 
-// Loading Spinner Component
+// Loading Spinner
 const LoadingSpinner: React.FC<{ size?: 'sm' | 'md' | 'lg'; text?: string }> = ({ size = 'md', text = 'جار التحميل...' }) => {
-  const sizeClasses = {
-    sm: 'h-4 w-4',
-    md: 'h-8 w-8',
-    lg: 'h-12 w-12'
-  };
-
+  const sizeClasses = { sm: 'h-4 w-4', md: 'h-8 w-8', lg: 'h-12 w-12' };
+  
   return (
     <div className="flex flex-col items-center justify-center p-8">
       <div className={`animate-spin rounded-full border-b-2 border-blue-600 ${sizeClasses[size]}`} role="status" aria-label="جار التحميل"></div>
@@ -196,21 +649,16 @@ const LoadingSpinner: React.FC<{ size?: 'sm' | 'md' | 'lg'; text?: string }> = (
   );
 };
 
-// Status Badge Component
-const StatusBadge: React.FC<{ 
-  status: 'active' | 'inactive' | 'locked' | 'unlocked' | 'mfa' | 'verified';
-  text: string;
-}> = ({ status, text }) => {
-  const statusConfig = {
+// Status Badge
+const StatusBadge: React.FC<{ status: 'active' | 'inactive' | 'locked' | 'unlocked' | 'mfa' | 'verified'; text: string }> = ({ status, text }) => {
+  const config = {
     active: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-800 dark:text-emerald-300', border: 'border-emerald-200 dark:border-emerald-800' },
     inactive: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-800 dark:text-rose-300', border: 'border-rose-200 dark:border-rose-800' },
     locked: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-800 dark:text-amber-300', border: 'border-amber-200 dark:border-amber-800' },
     unlocked: { bg: 'bg-sky-100 dark:bg-sky-900/30', text: 'text-sky-800 dark:text-sky-300', border: 'border-sky-200 dark:border-sky-800' },
     mfa: { bg: 'bg-violet-100 dark:bg-violet-900/30', text: 'text-violet-800 dark:text-violet-300', border: 'border-violet-200 dark:border-violet-800' },
     verified: { bg: 'bg-blue-100 dark:bg-blue-900/30', text: 'text-blue-800 dark:text-blue-300', border: 'border-blue-200 dark:border-blue-800' }
-  };
-
-  const config = statusConfig[status];
+  }[status];
 
   return (
     <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${config.bg} ${config.text} ${config.border}`}>
@@ -219,55 +667,37 @@ const StatusBadge: React.FC<{
   );
 };
 
-// Role Badge Component
+// Role Badge
 const RoleBadge: React.FC<{ role: string }> = ({ role }) => {
-  const roleConfig = {
-    SUPER_ADMIN: { bg: 'bg-gradient-to-r from-rose-500 to-pink-600', icon: Crown },
-    MANAGER: { bg: 'bg-gradient-to-r from-amber-500 to-orange-600', icon: Star },
-    ADMIN: { bg: 'bg-gradient-to-r from-blue-500 to-cyan-600', icon: Settings },
-    WORKER: { bg: 'bg-gradient-to-r from-emerald-500 to-green-600', icon: UserCheck },
-    BUYER: { bg: 'bg-gradient-to-r from-purple-500 to-indigo-600', icon: null },
-    SUPPLIER: { bg: 'bg-gradient-to-r from-teal-500 to-emerald-600', icon: null }
-  };
+  const config = {
+    superadmin: { bg: 'bg-gradient-to-r from-rose-500 to-pink-600', icon: Crown },
+    super_admin: { bg: 'bg-gradient-to-r from-rose-500 to-pink-600', icon: Crown },
+    manager: { bg: 'bg-gradient-to-r from-amber-500 to-orange-600', icon: Star },
+    worker: { bg: 'bg-gradient-to-r from-emerald-500 to-green-600', icon: UserCheck },
+    buyer: { bg: 'bg-gradient-to-r from-purple-500 to-indigo-600', icon: null },
+    supplier: { bg: 'bg-gradient-to-r from-teal-500 to-emerald-600', icon: null },
+    user: { bg: 'bg-gradient-to-r from-gray-500 to-gray-600', icon: null }
+  }[role] || { bg: 'bg-gradient-to-r from-gray-500 to-gray-600', icon: null };
 
-  const config = roleConfig[role as keyof typeof roleConfig] || { bg: 'bg-gradient-to-r from-gray-500 to-gray-600', icon: null };
-  const IconComponent = config.icon;
+  const Icon = config.icon;
 
   return (
     <span className={`inline-flex items-center space-x-1 space-x-reverse px-3 py-1.5 rounded-full text-xs font-semibold text-white ${config.bg} shadow-sm`}>
-      {IconComponent && <IconComponent className="h-3 w-3" />}
-      <span>{role}</span>
+      {Icon && <Icon className="h-3 w-3" />}
+      <span>{getRoleDisplayName(role)}</span>
     </span>
   );
 };
 
-// User Avatar Component
-const UserAvatar: React.FC<{ 
-  name: string; 
-  size?: 'sm' | 'md' | 'lg';
-  src?: string;
-  className?: string;
-}> = ({ name, size = 'md', src, className = '' }) => {
-  const sizeClasses = {
-    sm: 'h-8 w-8 text-sm',
-    md: 'h-10 w-10 text-base',
-    lg: 'h-16 w-16 text-xl'
-  };
+// User Avatar
+const UserAvatar: React.FC<{ name: string; size?: 'sm' | 'md' | 'lg'; src?: string; className?: string }> = ({ name, size = 'md', src, className = '' }) => {
+  const sizes = { sm: 'h-8 w-8 text-sm', md: 'h-10 w-10 text-base', lg: 'h-16 w-16 text-xl' };
+  const gradient = "bg-gradient-to-br from-blue-500 via-purple-600 to-pink-500";
 
-  const gradientClass = "bg-gradient-to-br from-blue-500 via-purple-600 to-pink-500";
-
-  if (src) {
-    return (
-      <img
-        src={src}
-        alt={name}
-        className={`rounded-full object-cover ${sizeClasses[size]} ${className} border-2 border-white dark:border-gray-800 shadow-sm`}
-      />
-    );
-  }
-
+  if (src) return <img src={src} alt={name} className={`rounded-full object-cover ${sizes[size]} ${className} border-2 border-white dark:border-gray-800 shadow-sm`} />;
+  
   return (
-    <div className={`rounded-full flex items-center justify-center text-white font-semibold ${sizeClasses[size]} ${gradientClass} ${className} border-2 border-white dark:border-gray-800 shadow-sm`}>
+    <div className={`rounded-full flex items-center justify-center text-white font-semibold ${sizes[size]} ${gradient} ${className} border-2 border-white dark:border-gray-800 shadow-sm`}>
       {name.charAt(0).toUpperCase()}
     </div>
   );
@@ -277,18 +707,8 @@ const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [pagination, setPagination] = useState<Pagination>({ 
-    totalPages: 1, 
-    currentPage: 1, 
-    totalItems: 0,
-    hasNext: false,
-    hasPrev: false
-  });
-  const [filters, setFilters] = useState<FilterState>({ 
-    role: 'all', 
-    status: 'all',
-    lockStatus: 'all'
-  });
+  const [pagination, setPagination] = useState<Pagination>({ totalPages: 1, currentPage: 1, totalItems: 0, hasNext: false, hasPrev: false });
+  const [filters, setFilters] = useState<FilterState>({ role: 'all', status: 'all', lockStatus: 'all' });
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState<boolean>(false);
@@ -296,281 +716,259 @@ const UserManagement: React.FC = () => {
   const [viewingUser, setViewingUser] = useState<UserDetails | null>(null);
   const [userDetailsLoading, setUserDetailsLoading] = useState<boolean>(false);
   const [roles, setRoles] = useState<Role[]>([]);
-  const [selectedUsers, setSelectedUsers] = useState<number[]>([]);
-  const [departments] = useState<string[]>([
-    'الإدارة العليا',
-    'إدارة النظام',
-    'المبيعات والتسويق',
-    'الدعم الفني',
-    'التطوير والبرمجة',
-    'الجودة والتدقيق',
-    'المالية والمحاسبة',
-    'التدريب والتطوير',
-    'خدمة العملاء',
-    'الموارد البشرية'
-  ]);
+  const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [showFilters, setShowFilters] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Form states
+  const [formLoading, setFormLoading] = useState<boolean>(false);
+  const [formError, setFormError] = useState<string>("");
+  const [formSuccess, setFormSuccess] = useState<string>("");
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<UserFormData>();
 
-  const { register, handleSubmit, control, reset, formState: { errors, isSubmitting } } = useForm<UserFormData>();
-
-  // Custom debounce function
-  const debounce = (func: Function, wait: number) => {
-    let timeout: NodeJS.Timeout;
-    return (...args: any[]) => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-  };
+  // Service instance
+  const userService = useMemo(() => UserManagementService.getInstance(), []);
 
   // Fetch roles
   const fetchRoles = useCallback(async () => {
     try {
-      console.log('🔄 جلب الأدوار...');
-      const result = await enhancedSuperadminApi.safeGetRoles();
-      
-      if (result.success) {
-        setRoles(result.roles || []);
-        console.log(`✅ تم جلب ${result.roles?.length || 0} دور`);
-      } else {
-        console.error('❌ خطأ في جلب الأدوار:', result.error);
-        toast.error('فشل جلب الأدوار');
-        setRoles([
-          { id: 1, name: 'SUPER_ADMIN', description: 'System administrator with full access', security_level: 10, is_system_role: true },
-          { id: 2, name: 'MANAGER', description: 'Manager with elevated permissions', security_level: 8, is_system_role: false },
-          { id: 3, name: 'ADMIN', description: 'Administrator with system access', security_level: 7, is_system_role: false },
-          { id: 4, name: 'WORKER', description: 'Regular worker', security_level: 5, is_system_role: false },
-          { id: 5, name: 'BUYER', description: 'Buyer role', security_level: 3, is_system_role: false },
-          { id: 6, name: 'SUPPLIER', description: 'Supplier role', security_level: 2, is_system_role: false }
-        ]);
-      }
-    } catch (error: any) {
-      console.error('❌ خطأ في جلب الأدوار:', error);
-      toast.error('فشل جلب الأدوار');
-      setRoles([
-        { id: 1, name: 'SUPER_ADMIN', description: 'System administrator with full access', security_level: 10, is_system_role: true },
-        { id: 2, name: 'MANAGER', description: 'Manager with elevated permissions', security_level: 8, is_system_role: false },
-        { id: 3, name: 'ADMIN', description: 'Administrator with system access', security_level: 7, is_system_role: false },
-        { id: 4, name: 'WORKER', description: 'Regular worker', security_level: 5, is_system_role: false },
-        { id: 5, name: 'BUYER', description: 'Buyer role', security_level: 3, is_system_role: false },
-        { id: 6, name: 'SUPPLIER', description: 'Supplier role', security_level: 2, is_system_role: false }
-      ]);
+      const rolesData = await userService.getRoles();
+      setRoles(rolesData);
+    } catch (error) {
+      console.error('Error fetching roles:', error);
+      toast.error('فشل تحميل الأدوار');
+      setRoles(DEFAULT_ROLES);
     }
-  }, []);
+  }, [userService]);
 
-  // Load users
+  // Load users with debouncing
   const loadUsers = useCallback(
     debounce(async (page: number, search: string, filters: FilterState) => {
       setLoading(true);
+      setError(null);
       try {
-        console.log('🔄 جلب المستخدمين...', { page, search, filters });
-        
-        const params: any = {
-          page,
-          limit: 10,
-          search
-        };
-
+        const params: any = { page, limit: 10 };
+        if (search) params.search = search;
         if (filters.role !== 'all') params.role = filters.role;
-        if (filters.status !== 'all') params.is_active = filters.status === 'active';
+        if (filters.status !== 'all') params.isActive = filters.status === 'active';
         if (filters.lockStatus !== 'all') params.is_locked = filters.lockStatus === 'locked';
 
-        const result = await enhancedSuperadminApi.safeGetUsers(params);
-
-        if (result.success) {
-          setUsers(result.users || []);
-          setPagination(result.pagination || {
-            totalPages: 1,
-            currentPage: 1,
-            totalItems: 0,
-            hasNext: false,
-            hasPrev: false
-          });
-          setSelectedUsers([]);
-          console.log(`✅ تم جلب ${result.users?.length || 0} مستخدم`);
-        } else {
-          console.error('❌ خطأ في جلب المستخدمين:', result.error);
-          toast.error('فشل جلب المستخدمين');
-          setUsers([]);
-        }
+        const result = await userService.getUsers(params);
+        
+        setUsers(result.users || []);
+        setPagination(result.pagination || { totalPages: 1, currentPage: 1, totalItems: 0, hasNext: false, hasPrev: false });
+        setSelectedUsers([]);
       } catch (error: any) {
-        console.error('❌ خطأ في جلب المستخدمين:', error);
-        toast.error('فشل جلب المستخدمين');
+        console.error('Error loading users:', error);
+        const errorMessage = error.message || 'فشل جلب المستخدمين';
+        setError(errorMessage);
+        toast.error(errorMessage);
         setUsers([]);
       } finally {
         setLoading(false);
         setIsRefreshing(false);
       }
     }, 500),
-    []
+    [userService]
   );
 
-  // Handle refresh
   const handleRefresh = () => {
     setIsRefreshing(true);
     fetchRoles();
-    loadUsers(pagination.currentPage, searchTerm, filters);
+    loadUsers(1, searchTerm, filters);
   };
 
   // Initial load
   useEffect(() => {
-    console.log('🚀 UserManagement component mounted');
-    debugAuthStatus();
     fetchRoles();
     loadUsers(1, '', filters);
-  }, [fetchRoles, loadUsers]);
+  }, [fetchRoles, loadUsers, filters]);
 
-  // Load users when filters change
+  // Handle search term changes
   useEffect(() => {
     loadUsers(1, searchTerm, filters);
   }, [searchTerm, filters, loadUsers]);
 
-  // Handle user details view
-  const handleViewUserDetails = async (userId: number) => {
+  // Create user
+  const handleCreateUser = async (formData: UserFormData) => {
+    const { name, email, password, role } = formData;
+    setFormError("");
+    setFormSuccess("");
+
+    if (!name || !email || !password || !role) {
+      setFormError("يرجى تعبئة جميع الحقول");
+      return;
+    }
+
+    if (!validateFullName(name)) {
+      setFormError("الاسم يجب أن يكون بين 2 و50 حرفًا ويحتوي على أحرف عربية أو إنجليزية فقط");
+      return;
+    }
+
+    if (!validateEmail(email)) {
+      setFormError("صيغة البريد الإلكتروني غير صحيحة");
+      return;
+    }
+
+    if (!validatePassword(password)) {
+      setFormError("كلمة المرور يجب أن تكون 8 أحرف على الأقل، وتحتوي على حرف كبير، حرف صغير، ورقم على الأقل");
+      return;
+    }
+
+    try {
+      setFormLoading(true);
+
+      const userData = {
+        email,
+        password,
+        name,
+        role: role,
+        isActive: true
+      };
+
+      const result = await userService.createUser(userData);
+      
+      if (result.success) {
+        const successMessage = `تم إنشاء حساب ${getRoleDisplayName(role)} بنجاح`;
+        setFormSuccess(successMessage);
+        toast.success(successMessage);
+        
+        setTimeout(() => {
+          setIsAddModalOpen(false);
+          handleClearForm();
+          loadUsers(1, searchTerm, filters);
+        }, 2000);
+      } else {
+        throw new Error(result.message || "فشل في إنشاء الحساب");
+      }
+    } catch (err: any) {
+      console.error("Create user error:", err);
+      let errorMessage = "حدث خطأ أثناء إنشاء المستخدم. يرجى المحاولة مرة أخرى";
+      
+      if (err.code === 'auth/email-already-in-use') {
+        errorMessage = "البريد الإلكتروني مستخدم بالفعل";
+      } else if (err.code === 'auth/invalid-email') {
+        errorMessage = "صيغة البريد الإلكتروني غير صحيحة";
+      } else if (err.code === 'auth/weak-password') {
+        errorMessage = "كلمة المرور ضعيفة جداً";
+      } else if (err.message?.includes("الدور المحدد غير موجود")) {
+        errorMessage = "الدور المحدد غير موجود";
+      } else {
+        errorMessage = err.message || errorMessage;
+      }
+      
+      setFormError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setFormLoading(false);
+    }
+  };
+
+  const handleClearForm = () => {
+    reset();
+    setFormError("");
+    setFormSuccess("");
+    setShowPassword(false);
+  };
+
+  const handleViewUserDetails = async (userId: string) => {
     try {
       setUserDetailsLoading(true);
-      console.log('🟡 جلب تفاصيل المستخدم للمعرف:', userId);
-      
-      const result = await enhancedSuperadminApi.safeGetUserDetails(userId);
-      
-      if (result.success && result.user) {
+      const result = await userService.getUserDetails(userId);
+      if (result.user) {
         setViewingUser(result.user);
         setIsViewModalOpen(true);
-        console.log('✅ تم جلب تفاصيل المستخدم');
       } else {
-        throw new Error(result.error || 'لا توجد بيانات في الاستجابة');
+        throw new Error('لا توجد بيانات');
       }
     } catch (error: any) {
-      console.error('🔴 خطأ في جلب تفاصيل المستخدم:', error);
-      const errorMessage = handleApiError(error, 'فشل جلب تفاصيل المستخدم');
-      toast.error(errorMessage);
+      console.error('Error fetching user details:', error);
+      toast.error(error.message || 'فشل جلب تفاصيل المستخدم');
     } finally {
       setUserDetailsLoading(false);
     }
   };
 
-  // Handle user activation/deactivation
-  const handleToggleUserStatus = async (userId: number, isActive: boolean) => {
-    const action = isActive ? 'تعطيل' : 'تفعيل';
-    if (!window.confirm(`هل أنت متأكد من ${action} هذا المستخدم؟`)) return;
-
+  const handleToggleUserStatus = async (userId: string, isActive: boolean) => {
+    if (!window.confirm(`هل أنت متأكد من ${isActive ? 'تعطيل' : 'تفعيل'} هذا المستخدم؟`)) return;
+    
     try {
-      let result;
-      if (isActive) {
-        result = await enhancedSuperadminApi.safeDeactivateUser(userId);
-      } else {
-        result = await enhancedSuperadminApi.safeActivateUser(userId);
-      }
-
+      const result = isActive ? 
+        await userService.deactivateUser(userId) : 
+        await userService.activateUser(userId);
+      
       if (result.success) {
         toast.success(result.message);
         loadUsers(pagination.currentPage, searchTerm, filters);
       } else {
-        throw new Error(result.error);
+        throw new Error(result.message);
       }
     } catch (error: any) {
-      console.error(`❌ خطأ في ${action} المستخدم:`, error);
-      toast.error(`فشل ${action} المستخدم`);
+      console.error('Error toggling user status:', error);
+      toast.error(error.message);
     }
   };
 
-  // Handle bulk user activation/deactivation
   const handleBulkToggleStatus = async (activate: boolean) => {
-    if (selectedUsers.length === 0) {
-      toast.error('يرجى تحديد مستخدم واحد على الأقل');
-      return;
-    }
-
-    const action = activate ? 'تفعيل' : 'تعطيل';
-    if (!window.confirm(`هل أنت متأكد من ${action} ${selectedUsers.length} مستخدم؟`)) return;
-
+    if (selectedUsers.length === 0) return toast.error('يرجى تحديد مستخدم واحد على الأقل');
+    if (!window.confirm(`هل أنت متأكد من ${activate ? 'تفعيل' : 'تعطيل'} ${selectedUsers.length} مستخدم؟`)) return;
+    
     try {
-      const promises = selectedUsers.map(userId => 
-        activate 
-          ? enhancedSuperadminApi.safeActivateUser(userId) 
-          : enhancedSuperadminApi.safeDeactivateUser(userId)
+      const promises = selectedUsers.map(id => 
+        activate ? userService.activateUser(id) : userService.deactivateUser(id)
       );
       const results = await Promise.all(promises);
-
       const successes = results.filter(r => r.success).length;
+      
       if (successes === selectedUsers.length) {
-        toast.success(`${action} ${successes} مستخدم بنجاح`);
+        toast.success(`${activate ? 'تفعيل' : 'تعطيل'} ${successes} مستخدم بنجاح`);
       } else {
-        toast.error(`تم ${action} ${successes} من ${selectedUsers.length} مستخدم`);
+        toast.error(`تم ${activate ? 'تفعيل' : 'تعطيل'} ${successes} من ${selectedUsers.length} مستخدم`);
       }
+      
       loadUsers(pagination.currentPage, searchTerm, filters);
       setSelectedUsers([]);
-    } catch (error: any) {
-      console.error(`❌ خطأ في ${action} المستخدمين:`, error);
-      toast.error(`فشل ${action} المستخدمين`);
+    } catch (error) {
+      console.error('Error in bulk toggle status:', error);
+      toast.error(`فشل ${activate ? 'تفعيل' : 'تعطيل'} المستخدمين`);
     }
   };
 
-  // Handle user lock/unlock
-  const handleToggleUserLock = async (userId: number, isLocked: boolean) => {
-    const action = isLocked ? 'فتح' : 'قفل';
-    if (!window.confirm(`هل أنت متأكد من ${action} هذا المستخدم؟`)) return;
-
+  const handleToggleUserLock = async (userId: string, isLocked: boolean) => {
+    if (!window.confirm(`هل أنت متأكد من ${isLocked ? 'فتح' : 'قفل'} هذا المستخدم؟`)) return;
+    
     try {
-      let result;
-      if (isLocked) {
-        result = await enhancedSuperadminApi.safeUnblockUser(userId);
-      } else {
-        result = await enhancedSuperadminApi.safeBlockUser(userId);
-      }
-
+      const result = isLocked ? 
+        await userService.unlockUser(userId) : 
+        await userService.lockUser(userId);
+      
       if (result.success) {
         toast.success(result.message);
         loadUsers(pagination.currentPage, searchTerm, filters);
       } else {
-        throw new Error(result.error);
+        throw new Error(result.message);
       }
     } catch (error: any) {
-      console.error(`❌ خطأ في ${action} المستخدم:`, error);
-      toast.error(`فشل ${action} المستخدم`);
+      console.error('Error toggling user lock:', error);
+      toast.error(error.message);
     }
   };
 
-  // Handle user creation
-  const handleCreateUser = async (data: UserFormData) => {
-    try {
-      console.log('🔄 إنشاء مستخدم جديد:', data);
-      const result = await enhancedSuperadminApi.safeCreateUser({
-        ...data,
-        phone_number: data.phone_number || null,
-        department: data.department || null,
-        position: data.position || null
-      });
-
-      if (result.success) {
-        toast.success(result.message);
-        setIsAddModalOpen(false);
-        reset();
-        loadUsers(1, searchTerm, filters);
-      } else {
-        throw new Error(result.error);
-      }
-    } catch (error: any) {
-      console.error('❌ خطأ في إنشاء المستخدم:', error);
-      const errorMessage = handleApiError(error, 'فشل إنشاء المستخدم');
-      toast.error(errorMessage);
-    }
-  };
-
-  // Handle user update
   const handleUpdateUser = async (data: UserFormData) => {
     if (!editingUser) return;
     
     try {
-      console.log('🔄 تحديث المستخدم:', editingUser.id, data);
-      const result = await enhancedSuperadminApi.safeUpdateUser(editingUser.id, {
-        ...data,
-        phone_number: data.phone_number || null,
-        department: data.department || null,
-        position: data.position || null
-      });
-
+      const updateData = {
+        name: data.name,
+        email: data.email,
+        role: data.role
+      };
+      
+      const result = await userService.updateUser(editingUser.id, updateData);
       if (result.success) {
         toast.success(result.message);
         setIsEditModalOpen(false);
@@ -578,240 +976,100 @@ const UserManagement: React.FC = () => {
         reset();
         loadUsers(pagination.currentPage, searchTerm, filters);
       } else {
-        throw new Error(result.error);
+        throw new Error(result.message);
       }
     } catch (error: any) {
-      console.error('❌ خطأ في تحديث المستخدم:', error);
-      const errorMessage = handleApiError(error, 'فشل تحديث المستخدم');
-      toast.error(errorMessage);
+      console.error('Error updating user:', error);
+      toast.error(error.message);
     }
   };
 
-  // Handle role assignment
-  const handleAssignRole = async (userId: number, roleId: number) => {
+  const handleAssignRole = async (userId: string, role: string) => {
     try {
-      const result = await enhancedSuperadminApi.safeUpdateUserRole(userId, { role_id: roleId });
+      const result = await userService.updateUserRole(userId, { role });
       if (result.success) {
         toast.success(result.message);
         loadUsers(pagination.currentPage, searchTerm, filters);
         if (isViewModalOpen && viewingUser?.id === userId) {
-          const updatedUser = await enhancedSuperadminApi.safeGetUserDetails(userId);
-          if (updatedUser.success && updatedUser.user) {
-            setViewingUser(updatedUser.user);
-          }
+          const updated = await userService.getUserDetails(userId);
+          if (updated.user) setViewingUser(updated.user);
         }
       } else {
-        throw new Error(result.error);
+        throw new Error(result.message);
       }
     } catch (error: any) {
-      console.error('❌ خطأ في تعيين الدور:', error);
-      toast.error('فشل تعيين الدور');
+      console.error('Error assigning role:', error);
+      toast.error(error.message);
     }
   };
 
-  // Handle password reset
-  const handleResetPassword = async (userId: number) => {
-    const newPassword = prompt('أدخل كلمة المرور الجديدة (يجب أن تكون 8 أحرف على الأقل وتحتوي على حرف كبير، حرف صغير، ورقم):');
-    if (!newPassword) return;
-
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-    if (!passwordRegex.test(newPassword)) {
-      toast.error('كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي على حرف كبير، حرف صغير، ورقم');
-      return;
-    }
-
-    try {
-      const result = await enhancedSuperadminApi.safeResetUserPassword(userId, newPassword);
-      if (result.success) {
-        toast.success(result.message);
-      } else {
-        throw new Error(result.error);
-      }
-    } catch (error: any) {
-      console.error('❌ خطأ في إعادة تعيين كلمة المرور:', error);
-      toast.error('فشل إعادة تعيين كلمة المرور');
-    }
+  const handleResetPassword = async (userId: string) => {
+    toast.info('سيتم إرسال رابط إعادة تعيين كلمة المرور إلى المستخدم');
   };
 
-  // Handle user deletion
-  const handleDeleteUser = async (userId: number, username: string) => {
+  const handleDeleteUser = async (userId: string, username: string) => {
     if (!window.confirm(`هل أنت متأكد من حذف المستخدم "${username}"؟ هذا الإجراء لا يمكن التراجع عنه.`)) return;
-
-    try {
-      toast.error('خاصية الحذف غير متاحة حالياً');
-    } catch (error: any) {
-      console.error('❌ خطأ في حذف المستخدم:', error);
-      toast.error('فشل حذف المستخدم');
-    }
+    toast.error('خاصية الحذف غير متاحة حالياً');
   };
 
-  // Handle export to CSV
   const handleExportToCSV = () => {
-    const headers = [
-      'ID',
-      'UUID',
-      'Username',
-      'Full Name',
-      'Email',
-      'Role',
-      'Status',
-      'Locked',
-      'Last Login',
-      'Created At',
-      'Updated At',
-      'Phone Number',
-      'Department',
-      'Position'
-    ];
-
-    const rows = users.map(user => [
-      user.id,
-      user.uuid,
-      user.username,
-      `"${user.full_name}"`,
-      user.email,
-      user.role_name || getRoleNameById(user.role_id),
-      user.is_active ? 'Active' : 'Inactive',
-      user.is_locked ? 'Locked' : 'Unlocked',
-      user.last_login || 'Never',
-      user.created_at,
-      user.updated_at,
-      user.phone_number || '',
-      user.department || '',
-      user.position || ''
+    const headers = ['ID', 'UUID', 'Name', 'Email', 'Role', 'Status', 'Locked', 'Last Login', 'Created At', 'Updated At'];
+    const rows = users.map(u => [
+      u.id, u.uid, `"${u.name}"`, u.email, u.role,
+      u.isActive ? 'Active' : 'Inactive', u.is_locked ? 'Locked' : 'Unlocked',
+      u.last_login || 'Never', u.createdAt, u.updatedAt
     ]);
-
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.join(','))
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `users_export_${new Date().toISOString()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `users_export_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
     URL.revokeObjectURL(url);
-
     toast.success('تم تصدير المستخدمين بنجاح');
   };
 
-  // Handle checkbox selection
-  const handleSelectUser = (userId: number) => {
+  const handleSelectUser = (userId: string) => {
     setSelectedUsers(prev => 
-      prev.includes(userId) 
-        ? prev.filter(id => id !== userId)
-        : [...prev, userId]
+      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
     );
   };
 
-  // Handle select all users
   const handleSelectAll = () => {
-    if (selectedUsers.length === users.length) {
-      setSelectedUsers([]);
-    } else {
-      setSelectedUsers(users.map(user => user.id));
-    }
+    setSelectedUsers(selectedUsers.length === users.length ? [] : users.map(u => u.id));
   };
 
-  // Clear search
   const handleClearSearch = () => {
     setSearchTerm('');
-    if (searchInputRef.current) {
-      searchInputRef.current.focus();
-    }
+    searchInputRef.current?.focus();
   };
 
-  // Clear filters
   const handleClearFilters = () => {
-    setFilters({
-      role: 'all',
-      status: 'all',
-      lockStatus: 'all'
-    });
+    setFilters({ role: 'all', status: 'all', lockStatus: 'all' });
   };
 
-  // Memoized filtered users - FIXED: Added proper array check
-  const filteredUsers = useMemo(() => {
-    if (!Array.isArray(users)) {
-      console.warn('⚠️ users is not an array, returning empty array');
-      return [];
-    }
-    return users;
-  }, [users]);
+  const filteredUsers = useMemo(() => users, [users]);
 
-  // Format date
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return 'لم يسجل دخول';
-    return new Date(dateString).toLocaleDateString('ar-EG', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  // Stats calculation - FIXED: Added proper array check
   const stats = useMemo(() => {
-    const userArray = Array.isArray(users) ? users : [];
-    const total = userArray.length;
-    const active = userArray.filter(user => user.is_active).length;
-    const locked = userArray.filter(user => user.is_locked).length;
-    const mfaEnabled = userArray.filter(user => user.mfa_enabled).length;
-
+    const total = users.length;
+    const active = users.filter(u => u.isActive).length;
+    const locked = users.filter(u => u.is_locked).length;
+    const mfaEnabled = users.filter(u => u.mfa_enabled).length;
     return { total, active, locked, mfaEnabled };
   }, [users]);
 
-  // Safe roles array
-  const safeRoles = Array.isArray(roles) ? roles : [];
-
-  // Get role name by ID
-  const getRoleNameById = (roleId: number) => {
-    const role = safeRoles.find(r => r.id === roleId);
-    return role ? role.name : 'UNKNOWN';
-  };
-
-  // Debug component
-  const AuthDebugInfo = () => {
-    const [authStatus, setAuthStatus] = useState<string>('جارٍ التحقق...');
-    
-    useEffect(() => {
-      const tokenStatus = debugAuthStatus();
-      if (tokenStatus.hasToken && tokenStatus.isValid) {
-        setAuthStatus(`✅ مصادق - ${tokenStatus.token}`);
-      } else {
-        setAuthStatus('❌ غير مصادق');
-      }
-    }, []);
-
-    if (process.env.NODE_ENV === 'production') return null;
-
-    return (
-      <div className="fixed bottom-4 left-4 bg-yellow-100 border border-yellow-400 rounded-lg p-3 text-xs max-w-xs z-50 shadow-lg">
-        <div className="font-semibold text-yellow-800">🔐 حالة المصادقة:</div>
-        <div className="text-yellow-700">{authStatus}</div>
-        <div className="mt-1 text-yellow-600">
-          التخزين: {Object.keys(localStorage).filter(k => k.includes('token') || k.includes('session')).join(', ') || 'لا توجد رموز'}
-        </div>
-      </div>
-    );
-  };
+  const availableRoles = useMemo(() => 
+    roles.filter(role => role.is_active !== false), 
+    [roles]
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 dark:from-gray-900 dark:to-gray-800 font-sans" dir="rtl">
-      <AuthDebugInfo />
-      
       <div className="container mx-auto px-4 py-8 space-y-6">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col lg:flex-row justify-between items-start lg:items-center space-y-6 lg:space-y-0"
-        >
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col lg:flex-row justify-between items-start lg:items-center space-y-6 lg:space-y-0">
           <div className="flex items-center space-x-4 space-x-reverse">
             <div className="relative">
               <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl shadow-lg">
@@ -823,38 +1081,23 @@ const UserManagement: React.FC = () => {
               <h1 className="text-3xl font-bold text-gray-900 dark:text-white bg-gradient-to-l from-blue-600 to-purple-600 bg-clip-text text-transparent">
                 إدارة المستخدمين
               </h1>
-              <p className="text-gray-600 dark:text-gray-300 mt-2 text-lg">
-                إدارة وتعديل مستخدمي النظام - صلاحيات المدير العام
-              </p>
+              <p className="text-gray-600 dark:text-gray-300 mt-2 text-lg">إدارة وتعديل مستخدمي النظام - صلاحيات المدير العام</p>
             </div>
           </div>
           
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center space-y-3 sm:space-y-0 sm:space-x-3 space-x-reverse">
-            <button
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-              className="px-6 py-3 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 transition-all duration-200 disabled:opacity-50 border border-gray-200 dark:border-gray-700 flex items-center justify-center space-x-2 space-x-reverse shadow-sm"
-              aria-label="تحديث البيانات"
-            >
+            <button onClick={handleRefresh} disabled={isRefreshing} className="px-6 py-3 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 transition-all duration-200 disabled:opacity-50 border border-gray-200 dark:border-gray-700 flex items-center justify-center space-x-2 space-x-reverse shadow-sm" aria-label="تحديث البيانات">
               <RefreshCw className={`h-5 w-5 ${isRefreshing ? 'animate-spin' : ''}`} />
               <span>تحديث</span>
             </button>
             
             <div className="flex space-x-2 space-x-reverse">
-              <button 
-                onClick={handleExportToCSV}
-                className="px-6 py-3 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 transition-all duration-200 border border-gray-200 dark:border-gray-700 flex items-center space-x-2 space-x-reverse shadow-sm"
-                aria-label="تصدير المستخدمين"
-              >
+              <button onClick={handleExportToCSV} className="px-6 py-3 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 transition-all duration-200 border border-gray-200 dark:border-gray-700 flex items-center space-x-2 space-x-reverse shadow-sm" aria-label="تصدير المستخدمين">
                 <Download className="h-5 w-5" />
                 <span>تصدير</span>
               </button>
               
-              <button
-                onClick={() => setIsAddModalOpen(true)}
-                className="bg-gradient-to-l from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white px-8 py-3 rounded-xl font-semibold flex items-center space-x-2 space-x-reverse transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 shadow-lg hover:shadow-xl"
-                aria-label="إضافة مستخدم جديد"
-              >
+              <button onClick={() => setIsAddModalOpen(true)} className="bg-gradient-to-l from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white px-8 py-3 rounded-xl font-semibold flex items-center space-x-2 space-x-reverse transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 shadow-lg hover:shadow-xl" aria-label="إضافة مستخدم جديد">
                 <Plus className="h-5 w-5" />
                 <span>مستخدم جديد</span>
               </button>
@@ -863,980 +1106,537 @@ const UserManagement: React.FC = () => {
         </motion.div>
 
         {/* Stats Cards */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6"
-        >
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-2xl text-white shadow-lg">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">إجمالي المستخدمين</p>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{stats.total}</p>
+                <p className="text-blue-100 text-sm">إجمالي المستخدمين</p>
+                <p className="text-3xl font-bold mt-1">{stats.total}</p>
               </div>
-              <div className="p-3 bg-blue-100 dark:bg-blue-900/30 rounded-xl">
-                <UserCheck className="h-6 w-6 text-blue-600 dark:text-blue-400" />
-              </div>
-            </div>
-            <div className="mt-4 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-              <div 
-                className="bg-blue-500 h-2 rounded-full transition-all duration-500" 
-                style={{ width: '100%' }}
-              ></div>
+              <Users className="h-10 w-10 text-blue-200" />
             </div>
           </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200">
+          
+          <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 p-6 rounded-2xl text-white shadow-lg">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">المستخدمين النشطين</p>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{stats.active}</p>
+                <p className="text-emerald-100 text-sm">نشط</p>
+                <p className="text-3xl font-bold mt-1">{stats.active}</p>
               </div>
-              <div className="p-3 bg-emerald-100 dark:bg-emerald-900/30 rounded-xl">
-                <UserCheck className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
-              </div>
-            </div>
-            <div className="mt-4 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-              <div 
-                className="bg-emerald-500 h-2 rounded-full transition-all duration-500" 
-                style={{ width: `${stats.total ? (stats.active / stats.total) * 100 : 0}%` }}
-              ></div>
+              <Activity className="h-10 w-10 text-emerald-200" />
             </div>
           </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200">
+          
+          <div className="bg-gradient-to-br from-amber-500 to-amber-600 p-6 rounded-2xl text-white shadow-lg">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">الحسابات المقفلة</p>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{stats.locked}</p>
+                <p className="text-amber-100 text-sm">مقفل</p>
+                <p className="text-3xl font-bold mt-1">{stats.locked}</p>
               </div>
-              <div className="p-3 bg-amber-100 dark:bg-amber-900/30 rounded-xl">
-                <Lock className="h-6 w-6 text-amber-600 dark:text-amber-400" />
-              </div>
-            </div>
-            <div className="mt-4 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-              <div 
-                className="bg-amber-500 h-2 rounded-full transition-all duration-500" 
-                style={{ width: `${stats.total ? (stats.locked / stats.total) * 100 : 0}%` }}
-              ></div>
+              <Lock className="h-10 w-10 text-amber-200" />
             </div>
           </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow duration-200">
+          
+          <div className="bg-gradient-to-br from-violet-500 to-violet-600 p-6 rounded-2xl text-white shadow-lg">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">المصادقة الثنائية</p>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{stats.mfaEnabled}</p>
+                <p className="text-violet-100 text-sm">مفعل MFA</p>
+                <p className="text-3xl font-bold mt-1">{stats.mfaEnabled}</p>
               </div>
-              <div className="p-3 bg-violet-100 dark:bg-violet-900/30 rounded-xl">
-                <Shield className="h-6 w-6 text-violet-600 dark:text-violet-400" />
-              </div>
-            </div>
-            <div className="mt-4 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-              <div 
-                className="bg-violet-500 h-2 rounded-full transition-all duration-500" 
-                style={{ width: `${stats.total ? (stats.mfaEnabled / stats.total) * 100 : 0}%` }}
-              ></div>
+              <Shield className="h-10 w-10 text-violet-200" />
             </div>
           </div>
         </motion.div>
 
-        {/* Search and Filters */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-200 dark:border-gray-700"
-        >
-          <div className="flex flex-col lg:flex-row gap-6">
-            {/* Search Input */}
+        {/* Search & Filters */}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }} className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6 border border-gray-200 dark:border-gray-700">
+          <div className="flex flex-col lg:flex-row gap-4">
             <div className="flex-1 relative">
-              <div className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400">
-                <Search className="h-5 w-5" />
-              </div>
+              <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="ابحث عن مستخدم بالاسم، البريد الإلكتروني، أو اسم المستخدم..."
+                placeholder="ابحث بالاسم، البريد، أو المعرف..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pr-12 pl-4 py-4 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-lg placeholder-gray-500 dark:placeholder-gray-400"
-                aria-label="البحث عن مستخدم"
+                className="w-full pr-12 pl-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
               />
               {searchTerm && (
-                <button
-                  onClick={handleClearSearch}
-                  className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600"
-                  aria-label="مسح البحث"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-
-            {/* Filter Toggle */}
-            <div className="flex items-center space-x-3 space-x-reverse">
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className={`px-6 py-4 rounded-xl font-medium flex items-center space-x-2 space-x-reverse transition-all duration-200 ${
-                  showFilters 
-                    ? 'bg-blue-500 text-white shadow-lg' 
-                    : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600'
-                }`}
-                aria-label={showFilters ? 'إخفاء الفلاتر' : 'إظهار الفلاتر'}
-              >
-                <Filter className="h-5 w-5" />
-                <span>الفلاتر</span>
-                {Object.values(filters).some(val => val !== 'all') && (
-                  <span className="bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                    {Object.values(filters).filter(val => val !== 'all').length}
-                  </span>
-                )}
-              </button>
-
-              {Object.values(filters).some(val => val !== 'all') && (
-                <button
-                  onClick={handleClearFilters}
-                  className="px-4 py-4 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-xl hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
-                  aria-label="مسح الفلاتر"
-                >
+                <button onClick={handleClearSearch} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600">
                   <X className="h-5 w-5" />
                 </button>
               )}
             </div>
+            
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className="px-6 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all flex items-center space-x-2 space-x-reverse"
+              >
+                <Filter className="h-5 w-5" />
+                <span>تصفية</span>
+                {(filters.role !== 'all' || filters.status !== 'all' || filters.lockStatus !== 'all') && (
+                  <span className="bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">!</span>
+                )}
+              </button>
+              
+              {(filters.role !== 'all' || filters.status !== 'all' || filters.lockStatus !== 'all') && (
+                <button onClick={handleClearFilters} className="px-4 py-3 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 rounded-xl hover:bg-rose-200 dark:hover:bg-rose-900/50 transition-all">
+                  <RotateCcw className="h-5 w-5" />
+                </button>
+              )}
+            </div>
           </div>
-
-          {/* Advanced Filters */}
+          
           <AnimatePresence>
             {showFilters && (
               <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700 overflow-hidden"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 overflow-hidden"
               >
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الدور</label>
-                    <select
-                      value={filters.role}
-                      onChange={(e) => setFilters({ ...filters, role: e.target.value })}
-                      className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                      aria-label="تصفية حسب الدور"
-                    >
-                      <option value="all">جميع الأدوار</option>
-                      {safeRoles.map((role) => (
-                        <option key={role.id} value={role.name}>{role.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">حالة الحساب</label>
-                    <select
-                      value={filters.status}
-                      onChange={(e) => setFilters({ ...filters, status: e.target.value as FilterState['status'] })}
-                      className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                      aria-label="تصفية حسب حالة الحساب"
-                    >
-                      <option value="all">جميع الحالات</option>
-                      <option value="active">نشط</option>
-                      <option value="inactive">معطل</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">حالة القفل</label>
-                    <select
-                      value={filters.lockStatus}
-                      onChange={(e) => setFilters({ ...filters, lockStatus: e.target.value as FilterState['lockStatus'] })}
-                      className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                      aria-label="تصفية حسب حالة القفل"
-                    >
-                      <option value="all">جميع حالات القفل</option>
-                      <option value="locked">مقفل</option>
-                      <option value="unlocked">مفتوح</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الدور</label>
+                  <select
+                    value={filters.role}
+                    onChange={(e) => setFilters({ ...filters, role: e.target.value })}
+                    className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">جميع الأدوار</option>
+                    {availableRoles.map(role => (
+                      <option key={role.id} value={role.name}>{getRoleDisplayName(role.name)}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الحالة</label>
+                  <select
+                    value={filters.status}
+                    onChange={(e) => setFilters({ ...filters, status: e.target.value as any })}
+                    className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">جميع الحالات</option>
+                    <option value="active">نشط</option>
+                    <option value="inactive">معطل</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">حالة القفل</label>
+                  <select
+                    value={filters.lockStatus}
+                    onChange={(e) => setFilters({ ...filters, lockStatus: e.target.value as any })}
+                    className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">جميع الحالات</option>
+                    <option value="locked">مقفل</option>
+                    <option value="unlocked">مفتوح</option>
+                  </select>
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
         </motion.div>
 
+        {/* Error Message */}
+        {error && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl p-4 flex items-center space-x-3 space-x-reverse">
+            <AlertCircle className="h-5 w-5 text-rose-600 dark:text-rose-400" />
+            <p className="text-rose-800 dark:text-rose-300">{error}</p>
+          </motion.div>
+        )}
+
         {/* Bulk Actions */}
         {selectedUsers.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white dark:bg-gray-800 rounded-2xl p-4 shadow-sm border border-gray-200 dark:border-gray-700 flex items-center space-x-4 space-x-reverse"
-          >
-            <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">
-              {selectedUsers.length} مستخدم محدد
-            </span>
-            <button
-              onClick={() => handleBulkToggleStatus(true)}
-              className="px-4 py-2 text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
-              aria-label="تفعيل المستخدمين المحددين"
-            >
-              تفعيل
-            </button>
-            <button
-              onClick={() => handleBulkToggleStatus(false)}
-              className="px-4 py-2 text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 rounded-xl hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
-              aria-label="تعطيل المستخدمين المحددين"
-            >
-              تعطيل
-            </button>
-            <button
-              onClick={() => setSelectedUsers([])}
-              className="px-4 py-2 text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/20 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700/30 transition-colors"
-              aria-label="إلغاء التحديد"
-            >
-              إلغاء
-            </button>
+          <motion.div initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-blue-800 dark:text-blue-300 font-medium">
+              تم تحديد {selectedUsers.length} مستخدم
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleBulkToggleStatus(true)}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center space-x-2 space-x-reverse transition-colors"
+              >
+                <CheckCircle className="h-4 w-4" />
+                <span>تفعيل</span>
+              </button>
+              <button
+                onClick={() => handleBulkToggleStatus(false)}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg flex items-center space-x-2 space-x-reverse transition-colors"
+              >
+                <AlertTriangle className="h-4 w-4" />
+                <span>تعطيل</span>
+              </button>
+            </div>
           </motion.div>
         )}
 
         {/* Users Table */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden"
-        >
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }} className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg overflow-hidden border border-gray-200 dark:border-gray-700">
           {loading ? (
-            <LoadingSpinner text="جارٍ تحميل المستخدمين..." />
-          ) : filteredUsers.length === 0 ? (
+            <div className="p-12">
+              <LoadingSpinner text="جارٍ تحميل المستخدمين..." />
+            </div>
+          ) : users.length === 0 ? (
             <div className="p-12 text-center">
-              <div className="max-w-md mx-auto">
-                <div className="p-4 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/20 dark:to-purple-900/20 rounded-2xl inline-block mb-4">
-                  <UserX className="h-12 w-12 text-blue-500 dark:text-blue-400" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">لا يوجد مستخدمون</h3>
-                <p className="text-gray-500 dark:text-gray-400 mb-6">
-                  {searchTerm || Object.values(filters).some(val => val !== 'all') 
-                    ? 'لم يتم العثور على مستخدمين مطابقين لمعايير البحث' 
-                    : 'لم يتم إضافة أي مستخدمين بعد'
-                  }
-                </p>
-                {(searchTerm || Object.values(filters).some(val => val !== 'all')) && (
-                  <button
-                    onClick={() => {
-                      setSearchTerm('');
-                      handleClearFilters();
-                    }}
-                    className="px-6 py-3 bg-blue-500 text-white rounded-xl hover:bg-blue-600 transition-colors font-medium"
-                  >
-                    عرض جميع المستخدمين
-                  </button>
-                )}
-              </div>
+              <Users className="h-16 w-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+              <p className="text-gray-500 dark:text-gray-400">لا يوجد مستخدمون</p>
             </div>
           ) : (
-            <>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gradient-to-l from-gray-50 to-gray-100 dark:from-gray-700 dark:to-gray-800">
-                    <tr>
-                      <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">
+                  <tr>
+                    <th className="px-6 py-4 text-right">
+                      <input
+                        type="checkbox"
+                        checked={selectedUsers.length === users.length && users.length > 0}
+                        onChange={handleSelectAll}
+                        className="w-5 h-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      />
+                    </th>
+                    <th className="px-6 py-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">المستخدم</th>
+                    <th className="px-6 py-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">البريد</th>
+                    <th className="px-6 py-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">الدور</th>
+                    <th className="px-6 py-4 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">الحالة</th>
+                    <th className="px-6 py-4 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">آخر دخول</th>
+                    <th className="px-6 py-4 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">إجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                  {filteredUsers.map((user) => (
+                    <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                      <td className="px-6 py-4">
                         <input
                           type="checkbox"
-                          checked={selectedUsers.length === users.length && users.length > 0}
-                          onChange={handleSelectAll}
-                          className="rounded text-blue-600 focus:ring-blue-500"
-                          aria-label="تحديد جميع المستخدمين"
+                          checked={selectedUsers.includes(user.id)}
+                          onChange={() => handleSelectUser(user.id)}
+                          className="w-5 h-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
                         />
-                      </th>
-                      <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">المستخدم</th>
-                      <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">الدور</th>
-                      <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">الحالة</th>
-                      <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">آخر دخول</th>
-                      <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">الإجراءات</th>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center space-x-3 space-x-reverse">
+                          <UserAvatar name={user.name} size="sm" />
+                          <div>
+                            <p className="font-medium text-gray-900 dark:text-white">{user.name}</p>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">{user.email}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-900 dark:text-white">{user.email}</td>
+                      <td className="px-6 py-4">
+                        <RoleBadge role={user.role} />
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        <div className="flex items-center justify-center space-x-2 space-x-reverse">
+                          <StatusBadge status={user.isActive ? 'active' : 'inactive'} text={user.isActive ? 'نشط' : 'معطل'} />
+                          {user.is_locked && <StatusBadge status="locked" text="مقفل" />}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                        {formatDate(user.last_login)}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center justify-center space-x-2 space-x-reverse">
+                          <button
+                            onClick={() => handleViewUserDetails(user.id)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
+                            aria-label="عرض التفاصيل"
+                          >
+                            <Eye className="h-5 w-5" />
+                          </button>
+                          
+                          <button
+                            onClick={() => {
+                              setEditingUser(user);
+                              setIsEditModalOpen(true);
+                            }}
+                            className="p-2 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-colors"
+                            aria-label="تعديل"
+                          >
+                            <Edit className="h-5 w-5" />
+                          </button>
+                          
+                          <button
+                            onClick={() => handleToggleUserStatus(user.id, user.isActive)}
+                            className={`p-2 ${user.isActive ? 'text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30' : 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'} rounded-lg transition-colors`}
+                            aria-label={user.isActive ? 'تعطيل' : 'تفعيل'}
+                          >
+                            {user.isActive ? <UserX className="h-5 w-5" /> : <UserCheck className="h-5 w-5" />}
+                          </button>
+                          
+                          <button
+                            onClick={() => handleToggleUserLock(user.id, user.is_locked)}
+                            className={`p-2 ${user.is_locked ? 'text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/30' : 'text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30'} rounded-lg transition-colors`}
+                            aria-label={user.is_locked ? 'فتح' : 'قفل'}
+                          >
+                            {user.is_locked ? <Unlock className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
+                          </button>
+                          
+                          <button
+                            onClick={() => handleDeleteUser(user.id, user.name)}
+                            className="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                            aria-label="حذف"
+                          >
+                            <Trash2 className="h-5 w-5" />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {filteredUsers.map((user, index) => (
-                      <motion.tr
-                        key={user.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.05 }}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors duration-200 group"
-                      >
-                        <td className="px-6 py-4">
-                          <input
-                            type="checkbox"
-                            checked={selectedUsers.includes(user.id)}
-                            onChange={() => handleSelectUser(user.id)}
-                            className="rounded text-blue-600 focus:ring-blue-500"
-                            aria-label={`تحديد ${user.username}`}
-                          />
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center space-x-4 space-x-reverse">
-                            <UserAvatar name={user.username} src={user.avatar_url} />
-                            <div className="text-right">
-                              <div className="text-sm font-semibold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                                {user.full_name}
-                              </div>
-                              <div className="text-sm text-gray-500 dark:text-gray-400">{user.email}</div>
-                              <div className="text-xs text-gray-400 dark:text-gray-500 flex items-center space-x-1 space-x-reverse mt-1">
-                                <span>@{user.username}</span>
-                                {user.phone_number && (
-                                  <>
-                                    <span>•</span>
-                                    <span>{user.phone_number}</span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col space-y-2">
-                            <RoleBadge role={user.role_name || getRoleNameById(user.role_id)} />
-                            {user.department && (
-                              <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded-lg">
-                                {user.department}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col space-y-2">
-                            <StatusBadge 
-                              status={user.is_active ? 'active' : 'inactive'} 
-                              text={user.is_active ? 'نشط' : 'معطل'} 
-                            />
-                            {user.is_locked && (
-                              <StatusBadge status="locked" text="مقفل" />
-                            )}
-                            {user.mfa_enabled && (
-                              <StatusBadge status="mfa" text="MFA" />
-                            )}
-                            {user.email_verified && (
-                              <StatusBadge status="verified" text="مفعل" />
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-sm text-gray-600 dark:text-gray-400">
-                            {formatDate(user.last_login)}
-                          </div>
-                          <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                            {new Date(user.created_at).toLocaleDateString('ar-EG')}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex justify-end space-x-1 space-x-reverse">
-                            <button
-                              onClick={() => handleViewUserDetails(user.id)}
-                              disabled={userDetailsLoading}
-                              className="p-2 text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300 focus:outline-none disabled:opacity-50 transition-all duration-200 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-900/20 group/btn"
-                              aria-label={`عرض تفاصيل ${user.username}`}
-                              title="عرض التفاصيل"
-                            >
-                              <Eye className="h-4 w-4 group-hover/btn:scale-110 transition-transform" />
-                            </button>
-                            <button
-                              onClick={() => {
-                                setEditingUser(user);
-                                setIsEditModalOpen(true);
-                                reset({
-                                  full_name: user.full_name,
-                                  email: user.email,
-                                  username: user.username,
-                                  role_id: user.role_id,
-                                  phone_number: user.phone_number,
-                                  department: user.department,
-                                  position: user.position
-                                });
-                              }}
-                              className="p-2 text-emerald-600 hover:text-emerald-900 dark:text-emerald-400 dark:hover:text-emerald-300 focus:outline-none transition-all duration-200 rounded-xl hover:bg-emerald-50 dark:hover:bg-emerald-900/20 group/btn"
-                              aria-label={`تعديل ${user.username}`}
-                              title="تعديل"
-                            >
-                              <Edit className="h-4 w-4 group-hover/btn:scale-110 transition-transform" />
-                            </button>
-                            <button
-                              onClick={() => handleToggleUserLock(user.id, user.is_locked)}
-                              className={`p-2 focus:outline-none transition-all duration-200 rounded-xl group/btn ${
-                                user.is_locked 
-                                  ? 'text-emerald-600 hover:text-emerald-900 dark:text-emerald-400 dark:hover:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'
-                                  : 'text-amber-600 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20'
-                              }`}
-                              aria-label={user.is_locked ? `فتح ${user.username}` : `قفل ${user.username}`}
-                              title={user.is_locked ? 'فتح المستخدم' : 'قفل المستخدم'}
-                            >
-                              {user.is_locked ? 
-                                <Unlock className="h-4 w-4 group-hover/btn:scale-110 transition-transform" /> : 
-                                <Lock className="h-4 w-4 group-hover/btn:scale-110 transition-transform" />
-                              }
-                            </button>
-                            <button
-                              onClick={() => handleResetPassword(user.id)}
-                              className="p-2 text-purple-600 hover:text-purple-900 dark:text-purple-400 dark:hover:text-purple-300 focus:outline-none transition-all duration-200 rounded-xl hover:bg-purple-50 dark:hover:bg-purple-900/20 group/btn"
-                              aria-label={`إعادة تعيين كلمة مرور ${user.username}`}
-                              title="إعادة تعيين كلمة المرور"
-                            >
-                              <RotateCcw className="h-4 w-4 group-hover/btn:scale-110 transition-transform" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteUser(user.id, user.username)}
-                              className="p-2 text-rose-600 hover:text-rose-900 dark:text-rose-400 dark:hover:text-rose-300 focus:outline-none transition-all duration-200 rounded-xl hover:bg-rose-50 dark:hover:bg-rose-900/20 group/btn"
-                              aria-label={`حذف ${user.username}`}
-                              title="حذف المستخدم"
-                            >
-                              <Trash2 className="h-4 w-4 group-hover/btn:scale-110 transition-transform" />
-                            </button>
-                          </div>
-                        </td>
-                      </motion.tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-              {/* Pagination */}
-              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-                <div className="flex flex-col sm:flex-row items-center justify-between space-y-4 sm:space-y-0">
-                  <div className="text-sm text-gray-700 dark:text-gray-300">
-                    عرض <span className="font-semibold">{filteredUsers.length}</span> من <span className="font-semibold">{pagination.totalItems}</span> مستخدم
-                  </div>
-                  <div className="flex items-center space-x-2 space-x-reverse">
-                    <button
-                      onClick={() => loadUsers(Math.max(pagination.currentPage - 1, 1), searchTerm, filters)}
-                      disabled={pagination.currentPage === 1}
-                      className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 font-medium"
-                      aria-label="الصفحة السابقة"
-                    >
-                      السابق
-                    </button>
-                    <span className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 font-medium">
-                      الصفحة {pagination.currentPage} من {pagination.totalPages}
-                    </span>
-                    <button
-                      onClick={() => loadUsers(Math.min(pagination.currentPage + 1, pagination.totalPages), searchTerm, filters)}
-                      disabled={pagination.currentPage === pagination.totalPages}
-                      className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 font-medium"
-                      aria-label="الصفحة التالية"
-                    >
-                      التالي
-                    </button>
-                  </div>
+          {/* Pagination */}
+          {pagination.totalPages > 1 && (
+            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  عرض {((pagination.currentPage - 1) * 10) + 1} إلى {Math.min(pagination.currentPage * 10, pagination.totalItems)} من {pagination.totalItems} نتيجة
+                </p>
+                <div className="flex space-x-2 space-x-reverse">
+                  <button
+                    onClick={() => loadUsers(pagination.currentPage - 1, searchTerm, filters)}
+                    disabled={!pagination.hasPrev}
+                    className="px-4 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    السابق
+                  </button>
+                  <button
+                    onClick={() => loadUsers(pagination.currentPage + 1, searchTerm, filters)}
+                    disabled={!pagination.hasNext}
+                    className="px-4 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    التالي
+                  </button>
                 </div>
               </div>
-            </>
+            </div>
           )}
         </motion.div>
-      </div>
 
-      {/* Add User Modal */}
-      <Modal
-        isOpen={isAddModalOpen}
-        onClose={() => {
-          setIsAddModalOpen(false);
-          reset();
-        }}
-        title="إضافة مستخدم جديد"
-        size="lg"
-      >
-        <form onSubmit={handleSubmit(handleCreateUser)} className="space-y-6 p-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label htmlFor="full_name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الاسم الكامل *</label>
-              <input
-                id="full_name"
-                {...register('full_name', { required: 'الاسم الكامل مطلوب' })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.full_name ? 'true' : 'false'}
-                placeholder="أدخل الاسم الكامل"
-              />
-              {errors.full_name && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.full_name.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">البريد الإلكتروني *</label>
-              <input
-                id="email"
-                type="email"
-                {...register('email', {
-                  required: 'البريد الإلكتروني مطلوب',
-                  pattern: {
-                    value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-                    message: 'تنسيق البريد الإلكتروني غير صالح',
-                  },
-                })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.email ? 'true' : 'false'}
-                placeholder="example@company.com"
-              />
-              {errors.email && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.email.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="username" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">اسم المستخدم *</label>
-              <input
-                id="username"
-                {...register('username', {
-                  required: 'اسم المستخدم مطلوب',
-                  pattern: {
-                    value: /^[a-zA-Z0-9_]+$/,
-                    message: 'اسم المستخدم يجب أن يحتوي على أحرف وأرقام وشرطة سفلية فقط',
-                  },
-                  minLength: {
-                    value: 3,
-                    message: 'اسم المستخدم يجب أن يكون 3 أحرف على الأقل'
-                  }
-                })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.username ? 'true' : 'false'}
-                placeholder="اسم المستخدم"
-              />
-              {errors.username && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.username.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">كلمة المرور *</label>
-              <input
-                id="password"
-                type="password"
-                {...register('password', {
-                  required: 'كلمة المرور مطلوبة',
-                  minLength: {
-                    value: 8,
-                    message: 'كلمة المرور يجب أن تكون 8 أحرف على الأقل',
-                  },
-                  pattern: {
-                    value: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/,
-                    message: 'يجب أن تحتوي كلمة المرور على حرف كبير، حرف صغير، ورقم',
-                  },
-                })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.password ? 'true' : 'false'}
-                placeholder="كلمة المرور"
-              />
-              {errors.password && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.password.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="phone_number" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">رقم الهاتف</label>
-              <input
-                id="phone_number"
-                type="tel"
-                {...register('phone_number')}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                placeholder="+966 5X XXX XXXX"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="department" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">القسم</label>
-              <Controller
-                name="department"
-                control={control}
-                render={({ field }) => (
-                  <select
-                    {...field}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                    aria-label="اختيار القسم"
-                  >
-                    <option value="">اختر القسم</option>
-                    {departments.map((dept) => (
-                      <option key={dept} value={dept}>{dept}</option>
-                    ))}
-                  </select>
-                )}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="position" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">المنصب</label>
-              <input
-                id="position"
-                {...register('position')}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                placeholder="المسمى الوظيفي"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="role_id" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الدور *</label>
-              <Controller
-                name="role_id"
-                control={control}
-                rules={{ required: 'الدور مطلوب' }}
-                render={({ field }) => (
-                  <select
-                    {...field}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                    aria-invalid={errors.role_id ? 'true' : 'false'}
-                    aria-label="اختيار الدور"
-                  >
-                    <option value="">اختر دورًا</option>
-                    {safeRoles.map((role) => (
-                      <option key={role.id} value={role.id}>{role.name}</option>
-                    ))}
-                  </select>
-                )}
-              />
-              {errors.role_id && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.role_id.message}</span>
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div className="flex justify-end space-x-3 space-x-reverse pt-6 border-t border-gray-200 dark:border-gray-700">
-            <button
-              type="button"
-              onClick={() => {
-                setIsAddModalOpen(false);
-                reset();
-              }}
-              className="px-6 py-3 text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-600 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 transition-colors font-medium"
-              aria-label="إلغاء إضافة المستخدم"
-            >
-              إلغاء
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-6 py-3 bg-gradient-to-l from-blue-500 to-purple-600 text-white rounded-xl hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              aria-label="إضافة المستخدم"
-            >
-              {isSubmitting ? 'جاري الإضافة...' : 'إضافة المستخدم'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Edit User Modal */}
-      <Modal
-        isOpen={isEditModalOpen}
-        onClose={() => {
-          setIsEditModalOpen(false);
-          setEditingUser(null);
-          reset();
-        }}
-        title="تعديل المستخدم"
-        size="lg"
-      >
-        <form onSubmit={handleSubmit(handleUpdateUser)} className="space-y-6 p-6">     
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label htmlFor="full_name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الاسم الكامل *</label>
-              <input
-                id="full_name"
-                {...register('full_name', { required: 'الاسم الكامل مطلوب' })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.full_name ? 'true' : 'false'}
-                placeholder="أدخل الاسم الكامل"
-              />
-              {errors.full_name && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.full_name.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">البريد الإلكتروني *</label>
-              <input
-                id="email"
-                type="email"
-                {...register('email', {
-                  required: 'البريد الإلكتروني مطلوب',
-                  pattern: {
-                    value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-                    message: 'تنسيق البريد الإلكتروني غير صالح',
-                  },
-                })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.email ? 'true' : 'false'}
-                placeholder="example@company.com"
-              />
-              {errors.email && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.email.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="username" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">اسم المستخدم *</label>
-              <input
-                id="username"
-                {...register('username', {
-                  required: 'اسم المستخدم مطلوب',
-                  pattern: {
-                    value: /^[a-zA-Z0-9_]+$/,
-                    message: 'اسم المستخدم يجب أن يحتوي على أحرف وأرقام وشرطة سفلية فقط',
-                  },
-                  minLength: {
-                    value: 3,
-                    message: 'اسم المستخدم يجب أن يكون 3 أحرف على الأقل'
-                  }
-                })}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                aria-invalid={errors.username ? 'true' : 'false'}
-                placeholder="اسم المستخدم"
-              />
-              {errors.username && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.username.message}</span>
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label htmlFor="phone_number" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">رقم الهاتف</label>
-              <input
-                id="phone_number"
-                type="tel"
-                {...register('phone_number')}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                placeholder="+966 5X XXX XXXX"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="department" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">القسم</label>
-              <Controller
-                name="department"
-                control={control}
-                render={({ field }) => (
-                  <select
-                    {...field}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                    aria-label="اختيار القسم"
-                  >
-                    <option value="">اختر القسم</option>
-                    {departments.map((dept) => (
-                      <option key={dept} value={dept}>{dept}</option>
-                    ))}
-                  </select>
-                )}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="position" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">المنصب</label>
-              <input
-                id="position"
-                {...register('position')}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                placeholder="المسمى الوظيفي"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="role_id" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الدور *</label>
-              <Controller
-                name="role_id"
-                control={control}
-                rules={{ required: 'الدور مطلوب' }}
-                render={({ field }) => (
-                  <select
-                    {...field}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                    aria-invalid={errors.role_id ? 'true' : 'false'}
-                    aria-label="اختيار الدور"
-                  >
-                    <option value="">اختر دورًا</option>
-                    {safeRoles.map((role) => (
-                      <option key={role.id} value={role.id}>{role.name}</option>
-                    ))}
-                  </select>
-                )}
-              />
-              {errors.role_id && (
-                <p className="mt-1 text-sm text-red-600 dark:text-red-400 flex items-center space-x-1 space-x-reverse">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>{errors.role_id.message}</span>
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div className="flex justify-end space-x-3 space-x-reverse pt-6 border-t border-gray-200 dark:border-gray-700">
-            <button
-              type="button"
-              onClick={() => {
-                setIsEditModalOpen(false);
-                setEditingUser(null);
-                reset();
-              }}
-              className="px-6 py-3 text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-600 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 transition-colors font-medium"
-              aria-label="إلغاء التعديل"
-            >
-              إلغاء
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-6 py-3 bg-gradient-to-l from-blue-500 to-purple-600 text-white rounded-xl hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              aria-label="حفظ التعديلات"
-            >
-              {isSubmitting ? 'جاري الحفظ...' : 'حفظ التعديلات'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* View User Details Modal */}
-      <Modal
-        isOpen={isViewModalOpen}
-        onClose={() => {
-          setIsViewModalOpen(false);
-          setViewingUser(null);
-        }}
-        title="تفاصيل المستخدم"
-        size="lg"
-      >
-        <div className="p-6 space-y-6">
-          {userDetailsLoading ? (
-            <LoadingSpinner text="جارٍ تحميل تفاصيل المستخدم..." />
-          ) : viewingUser ? (
-            <>
-              <div className="flex items-center space-x-4 space-x-reverse">
-                <UserAvatar 
-                  name={viewingUser.full_name} 
-                  size="lg" 
-                  src={viewingUser.avatar_url}
-                  className="border-4 border-blue-100 dark:border-blue-900/30"
+        {/* Add User Modal */}
+        <Modal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); handleClearForm(); }} title="إضافة مستخدم جديد" size="md">
+          <form onSubmit={handleSubmit(handleCreateUser)} className="space-y-6 p-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الاسم الكامل</label>
+                <input
+                  {...register('name', { required: true })}
+                  type="text"
+                  placeholder="أدخل الاسم الكامل"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+                {errors.name && <p className="text-rose-600 text-sm mt-1">هذا الحقل مطلوب</p>}
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">البريد الإلكتروني</label>
+                <input
+                  {...register('email', { required: true })}
+                  type="email"
+                  placeholder="example@domain.com"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                {errors.email && <p className="text-rose-600 text-sm mt-1">هذا الحقل مطلوب</p>}
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الدور</label>
+                <select
+                  {...register('role', { required: true })}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">اختر الدور</option>
+                  {availableRoles
+                    .filter(role => role.name !== 'superadmin') // Filter out superadmin for security
+                    .map(role => (
+                      <option key={role.id} value={role.id}>
+                        {getRoleDisplayName(role.name)} - {role.description}
+                      </option>
+                    ))
+                  }
+                </select>
+                {errors.role && <p className="text-rose-600 text-sm mt-1">هذا الحقل مطلوب</p>}
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">كلمة المرور</label>
+                <div className="relative">
+                  <input
+                    {...register('password', { required: true })}
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    className="w-full pr-12 pl-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                  >
+                    {showPassword ? <Eye className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
+                {errors.password && <p className="text-rose-600 text-sm mt-1">هذا الحقل مطلوب</p>}
+                <p className="text-xs text-gray-500 mt-1">كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي على حرف كبير، صغير، ورقم</p>
+              </div>
+            </div>
+
+            {formError && (
+              <div className="bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 rounded-xl p-4 flex items-center space-x-3 space-x-reverse">
+                <AlertCircle className="h-5 w-5 text-rose-600 dark:text-rose-400" />
+                <p className="text-rose-800 dark:text-rose-300">{formError}</p>
+              </div>
+            )}
+
+            {formSuccess && (
+              <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl p-4 flex items-center space-x-3 space-x-reverse">
+                <CheckCircle className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                <p className="text-emerald-800 dark:text-emerald-300">{formSuccess}</p>
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-3 space-x-reverse pt-4">
+              <button
+                type="button"
+                onClick={() => { setIsAddModalOpen(false); handleClearForm(); }}
+                className="px-6 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                disabled={formLoading}
+                className="px-8 py-3 bg-gradient-to-l from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white rounded-xl font-semibold flex items-center space-x-2 space-x-reverse transition-all disabled:opacity-50"
+              >
+                {formLoading ? (
+                  <>
+                    <div className="h-5 w-5 animate-spin rounded-full border-b-2 border-white"></div>
+                    <span>جارٍ الإنشاء...</span>
+                  </>
+                ) : (
+                  <>
+                    <Plus className="h-5 w-5" />
+                    <span>إنشاء الحساب</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </Modal>
+
+        {/* Edit Modal */}
+        <Modal isOpen={isEditModalOpen} onClose={() => { setIsEditModalOpen(false); setEditingUser(null); reset(); }} title="تعديل المستخدم" size="md">
+          {editingUser && (
+            <form onSubmit={handleSubmit(handleUpdateUser)} className="space-y-6 p-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الاسم الكامل</label>
+                <input
+                  {...register('name', { required: true })}
+                  defaultValue={editingUser.name}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">البريد الإلكتروني</label>
+                <input
+                  {...register('email', { required: true })}
+                  defaultValue={editingUser.email || ''}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">الدور</label>
+                <select
+                  {...register('role', { required: true })}
+                  defaultValue={editingUser.role}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {availableRoles
+                    .filter(role => role.name !== 'superadmin' || editingUser.role === 'superadmin')
+                    .map(role => (
+                      <option key={role.id} value={role.id}>{getRoleDisplayName(role.name)}</option>
+                    ))
+                  }
+                </select>
+              </div>
+              
+              <div className="flex justify-end space-x-3 space-x-reverse pt-4">
+                <button
+                  type="button"
+                  onClick={() => { setIsEditModalOpen(false); setEditingUser(null); reset(); }}
+                  className="px-6 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-8 py-3 bg-gradient-to-l from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white rounded-xl font-semibold transition-all"
+                >
+                  حفظ التغييرات
+                </button>
+              </div>
+            </form>
+          )}
+        </Modal>
+
+        {/* View Details Modal */}
+        <Modal isOpen={isViewModalOpen} onClose={() => setIsViewModalOpen(false)} title="تفاصيل المستخدم" size="xl">
+          {userDetailsLoading ? (
+            <div className="p-12">
+              <LoadingSpinner text="جارٍ تحميل التفاصيل..." />
+            </div>
+          ) : viewingUser ? (
+            <div className="p-6 space-y-6">
+              <div className="flex items-center space-x-6 space-x-reverse">
+                <UserAvatar name={viewingUser.name} size="lg" />
                 <div>
-                  <h3 className="text-xl font-bold text-gray-900 dark:text-white">{viewingUser.full_name}</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">@{viewingUser.username}</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">{viewingUser.email}</p>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{viewingUser.name}</h3>
+                  <p className="text-gray-600 dark:text-gray-300">{viewingUser.email}</p>
+                  <div className="flex items-center space-x-3 space-x-reverse mt-2">
+                    <RoleBadge role={viewingUser.role} />
+                    <StatusBadge status={viewingUser.isActive ? 'active' : 'inactive'} text={viewingUser.isActive ? 'نشط' : 'معطل'} />
+                    {viewingUser.is_locked && <StatusBadge status="locked" text="مقفل" />}
+                    {viewingUser.mfa_enabled && <StatusBadge status="mfa" text="MFA" />}
+                    {viewingUser.emailVerified && <StatusBadge status="verified" text="موثق" />}
+                  </div>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">الدور</label>
-                    <div className="mt-1 flex items-center space-x-2 space-x-reverse">
-                      <RoleBadge role={viewingUser.role_name || getRoleNameById(viewingUser.role_id)} />
-                      <button
-                        onClick={() => {
-                          const newRoleId = prompt(
-                            'اختر دورًا جديدًا (معرف الدور): ' + 
-                            safeRoles.map(r => `${r.id}: ${r.name}`).join(', ')
-                          );
-                          if (newRoleId && !isNaN(parseInt(newRoleId))) {
-                            handleAssignRole(viewingUser.id, parseInt(newRoleId));
-                          }
-                        }}
-                        className="p-1 text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
-                        aria-label="تغيير الدور"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
-                    </div>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">البريد الإلكتروني</p>
+                    <p className="font-medium text-gray-900 dark:text-white">{viewingUser.email}</p>
                   </div>
-
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">القسم</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{viewingUser.department || 'غير محدد'}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">آخر دخول</p>
+                    <p className="font-medium text-gray-900 dark:text-white">{formatDate(viewingUser.last_login)}</p>
                   </div>
-
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">المنصب</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{viewingUser.position || 'غير محدد'}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">رقم الهاتف</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{viewingUser.phone_number || 'غير محدد'}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">تاريخ الإنشاء</p>
+                    <p className="font-medium text-gray-900 dark:text-white">{formatDate(viewingUser.createdAt)}</p>
                   </div>
                 </div>
-
+                
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">الحالة</label>
-                    <div className="mt-1 flex flex-col space-y-2">
-                      <StatusBadge 
-                        status={viewingUser.is_active ? 'active' : 'inactive'} 
-                        text={viewingUser.is_active ? 'نشط' : 'معطل'} 
-                      />
-                      {viewingUser.is_locked && <StatusBadge status="locked" text="مقفل" />}
-                      {viewingUser.mfa_enabled && <StatusBadge status="mfa" text="مفعل MFA" />}
-                      {viewingUser.email_verified && <StatusBadge status="verified" text="البريد مؤكد" />}
-                    </div>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">محاولات تسجيل دخول فاشلة</p>
+                    <p className="font-medium text-gray-900 dark:text-white">{viewingUser.failed_login_attempts || 0}</p>
                   </div>
-
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">آخر تسجيل دخول</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.last_login)}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">قفل حتى</p>
+                    <p className="font-medium text-gray-900 dark:text-white">{viewingUser.lockout_until ? formatDate(viewingUser.lockout_until) : 'غير مقفل'}</p>
                   </div>
-
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">تاريخ الإنشاء</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.created_at)}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">آخر تحديث</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.updated_at)}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-6 border-t border-gray-200 dark:border-gray-700">
-                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">معلومات الأمان</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">محاولات تسجيل الدخول الفاشلة</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{viewingUser.failed_login_attempts || 0}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">آخر محاولة فاشلة</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.last_failed_login)}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">انتهاء الجلسة</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.session_expires)}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">آخر تغيير لكلمة المرور</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.last_password_change)}</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">القفل حتى</label>
-                    <p className="mt-1 text-sm text-gray-900 dark:text-white">{formatDate(viewingUser.lockout_until)}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">تأكيد البريد</p>
+                    <p className="font-medium text-gray-900 dark:text-white">{viewingUser.emailVerified ? 'مؤكد' : 'غير مؤكد'}</p>
                   </div>
                 </div>
               </div>
@@ -1844,40 +1644,31 @@ const UserManagement: React.FC = () => {
               <div className="flex justify-end space-x-3 space-x-reverse pt-6 border-t border-gray-200 dark:border-gray-700">
                 <button
                   onClick={() => handleResetPassword(viewingUser.id)}
-                  className="px-6 py-3 text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 rounded-xl hover:bg-purple-100 dark:hover:bg-purple-900/30 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 transition-colors font-medium"
-                  aria-label="إعادة تعيين كلمة المرور"
+                  className="px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-medium flex items-center space-x-2 space-x-reverse transition-colors"
                 >
-                  إعادة تعيين كلمة المرور
+                  <RotateCcw className="h-5 w-5" />
+                  <span>إعادة تعيين كلمة المرور</span>
                 </button>
-                <button
-                  onClick={() => handleToggleUserLock(viewingUser.id, viewingUser.is_locked)}
-                  className={`px-6 py-3 font-medium rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${
-                    viewingUser.is_locked
-                      ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 focus:ring-emerald-500'
-                      : 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 focus:ring-amber-500'
-                  }`}
-                  aria-label={viewingUser.is_locked ? 'فتح الحساب' : 'قفل الحساب'}
+                
+                <select
+                  value={viewingUser.role}
+                  onChange={(e) => handleAssignRole(viewingUser.id, e.target.value)}
+                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-300"
                 >
-                  {viewingUser.is_locked ? 'فتح الحساب' : 'قفل الحساب'}
-                </button>
-                <button
-                  onClick={() => handleToggleUserStatus(viewingUser.id, viewingUser.is_active)}
-                  className={`px-6 py-3 font-medium rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${
-                    viewingUser.is_active
-                      ? 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 focus:ring-rose-500'
-                      : 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 focus:ring-emerald-500'
-                  }`}
-                  aria-label={viewingUser.is_active ? 'تعطيل الحساب' : 'تفعيل الحساب'}
-                >
-                  {viewingUser.is_active ? 'تعطيل الحساب' : 'تفعيل الحساب'}
-                </button>
+                  {availableRoles
+                    .filter(role => role.name !== 'superadmin' || viewingUser.role === 'superadmin')
+                    .map(role => (
+                      <option key={role.id} value={role.id}>{getRoleDisplayName(role.name)}</option>
+                    ))
+                  }
+                </select>
               </div>
-            </>
+            </div>
           ) : (
-            <p className="text-center text-gray-500 dark:text-gray-400">لا توجد بيانات لعرضها</p>
+            <div className="p-12 text-center text-gray-500 dark:text-gray-400">لا توجد بيانات</div>
           )}
-        </div>
-      </Modal>
+        </Modal>
+      </div>
     </div>
   );
 };

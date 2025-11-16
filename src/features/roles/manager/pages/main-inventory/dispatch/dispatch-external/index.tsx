@@ -1,6 +1,7 @@
+import React from "react";
 import { useState, useEffect } from 'react';
 import { FiSearch, FiDollarSign, FiX } from 'react-icons/fi';
-import Input from '@/components/ui/input';
+import { Input } from "@/features/roles/manager/ui/Input";
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 
@@ -282,6 +283,23 @@ export default function ExternalDispatchPage() {
                   onChange={(e) => field.onChange(e.target.value)}
                   placeholder={field.placeholder}
                   className="p-2 text-right text-sm bg-white/50 dark:bg-gray-800/50 rounded-lg w-full dispatch-input"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      const nextIndex = index + 1;
+                      if (nextIndex < 5) {
+                        document.querySelectorAll('.dispatch-input')[nextIndex]?.focus();
+                      } else {
+                        saveDispatch();
+                      }
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const prevIndex = index - 1;
+                      if (prevIndex >= 0) {
+                        document.querySelectorAll('.dispatch-input')[prevIndex]?.focus();
+                      }
+                    }
+                  }}
                 />
                 <label className="text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap">
                   {field.label}

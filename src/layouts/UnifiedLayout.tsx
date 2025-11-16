@@ -1,3 +1,4 @@
+// src/layouts/UnifiedLayout.tsx
 import React, { useState, useEffect, Suspense, lazy, useRef } from 'react';
 import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
@@ -15,6 +16,7 @@ import { OrdersProvider } from '../features/roles/buyer/context/OrdersContext';
 
 import BarcodeScannerModal from '../components/BarcodeScannerModal';
 import ErrorBoundary from '../components/ErrorBoundary';
+import EmailVerificationBanner from '../components/EmailVerificationBanner';
 
 import ManagerBottomNav from '../features/roles/manager/components/BottomNav';
 import { SidebarProvider } from '../features/roles/manager/components/sidebar-context';
@@ -41,11 +43,11 @@ interface UnifiedLayoutProps {
 }
 
 const UnifiedLayout: React.FC<UnifiedLayoutProps> = ({ children }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, firebaseUser } = useAuth();
   const location = useLocation();
   
   // 🔥 Normalize role more robustly (remove spaces and underscores)
-  let role = user?.role_name?.toLowerCase().replace(/ /g, '').replace(/_/g, '') || '';
+  let role = user?.role?.toLowerCase().replace(/ /g, '').replace(/_/g, '') || '';
   if (role === 'admin') role = 'manager';
   if (role.includes('superadmin')) role = 'superadmin'; // Fallback for variations
 
@@ -211,6 +213,13 @@ const UnifiedLayout: React.FC<UnifiedLayoutProps> = ({ children }) => {
             </header>
 
             <main ref={scrollRef} className="flex-1 overflow-y-auto pt-20 px-4 md:px-6 scroll-smooth z-0">
+              {/* Email Verification Banner - Shows when user is not verified */}
+              {firebaseUser && !firebaseUser.emailVerified && (
+                <div className="mb-6">
+                  <EmailVerificationBanner />
+                </div>
+              )}
+
               <ErrorBoundary>
                 <motion.div 
                   initial={{ opacity: 0, y: 20 }} 
@@ -239,4 +248,4 @@ const UnifiedLayout: React.FC<UnifiedLayoutProps> = ({ children }) => {
   );
 };
 
-export default UnifiedLayout;  
+export default UnifiedLayout;

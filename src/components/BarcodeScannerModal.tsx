@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+// src/components/BarcodeScannerModal.tsx
+import React, { useEffect, useRef, useState } from 'react';
 import { Dialog } from '@headlessui/react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Html5Qrcode, Html5QrcodeCameraScanConfig, Html5QrcodeScannerState, Html5QrcodeSupportedFormats } from 'html5-qrcode';

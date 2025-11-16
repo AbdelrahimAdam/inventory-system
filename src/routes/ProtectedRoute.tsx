@@ -1,4 +1,4 @@
-this is the protected routes update it to be the default is login page : import React from "react";
+import React from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import LoadingSpinner from "../components/LoadingSpinner";
@@ -26,3 +26,4 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowedRoles 
 };
 
 export default ProtectedRoute;
+   update them and send the full code

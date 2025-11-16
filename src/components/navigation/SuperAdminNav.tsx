@@ -68,7 +68,7 @@ import {
   Cog
 } from 'lucide-react';
 
-// Types based on your schema
+// Types based on Firebase schema
 interface NavItem {
   id: string;
   path: string;
@@ -100,7 +100,7 @@ const SuperAdminNav: React.FC<SuperAdminNavProps> = ({
   const copyrightYear = new Date().getFullYear();
   const companyCopyright = import.meta.env.VITE_APP_COMPANY_COPYRIGHT || `نظام إدارة المخزون © ${copyrightYear}`;
 
-  // Feature codes from your schema's feature_permissions table
+  // Feature codes from Firebase custom claims and user features
   const FEATURE_CODES = {
     // System Administration
     SUPER_ADMIN_DASHBOARD: 'SUPERADMIN_DASHBOARD',
@@ -625,7 +625,7 @@ const SuperAdminNav: React.FC<SuperAdminNavProps> = ({
     }
   ];
 
-  // Filter items based on user permissions
+  // Filter items based on user permissions from Firebase custom claims
   const filterItems = (items: NavItem[]): NavItem[] => {
     return items
       .map(item => {
@@ -801,8 +801,8 @@ const SuperAdminNav: React.FC<SuperAdminNavProps> = ({
         </div>
         {!collapsed && user && (
           <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-            <div>المستخدم: {user.full_name}</div>
-            <div>الدور: {user.role_name}</div>
+            <div>المستخدم: {user.name || user.full_name}</div>
+            <div>الدور: {user.role || user.role_name}</div>
             <div className="text-green-600 font-medium mt-1">✓ وصول كامل للنظام</div>
           </div>
         )}

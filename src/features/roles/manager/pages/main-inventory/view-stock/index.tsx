@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   FiSearch, FiRefreshCw, FiDownload, FiPrinter, FiFilter,
   FiChevronDown, FiChevronUp, FiX, FiEdit, FiTrash,
@@ -6,13 +6,17 @@ import {
 } from 'react-icons/fi';
 import { Input } from '../../../ui/Input';
 import Checkbox from '../../../ui/Checkbox';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import * as Dialog from '@radix-ui/react-dialog';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Save, CheckCircle, XCircle, TrendingUp, TrendingDown, BarChart3, Database } from 'lucide-react';
+import { 
+  Save, CheckCircle, XCircle, TrendingUp, TrendingDown, 
+  BarChart3, Database, Package, Factory, Truck, 
+  Users2, PackageCheck, Sun, Moon 
+} from 'lucide-react';
 import { useAuth } from "@/context/AuthContext";
 import { FiClock } from "react-icons/fi";
 
@@ -20,7 +24,7 @@ import { FiClock } from "react-icons/fi";
 const cn = (...classes: (string | false | null | undefined)[]) =>
   classes.filter(Boolean).join(' ');
 
-// Types based on the database schema
+// Types based on the PostgreSQL schema
 type InventoryItem = {
   id: number;
   uuid: string;
@@ -44,6 +48,70 @@ type InventoryItem = {
   created_by: number;
   updated_by: number | null;
   created_at: string;
+  updated_at: string;
+};
+
+type MonofiaItem = {
+  id: number;
+  uuid: string;
+  item_name: string;
+  item_code: string;
+  color: string;
+  carton_quantity: number;
+  items_per_carton: number;
+  individual_items: number;
+  total_quantity: number;
+  remaining_quantity: number;
+  supplier: string | null;
+  location: string | null;
+  notes: string | null;
+  entry_date: string;
+  added_date: string;
+  is_active: boolean;
+  created_by: number;
+  updated_at: string;
+};
+
+type MatbaaItem = {
+  id: number;
+  uuid: string;
+  item_name: string;
+  item_code: string;
+  color: string;
+  carton_quantity: number;
+  items_per_carton: number;
+  individual_items: number;
+  total_quantity: number;
+  remaining_quantity: number;
+  supplier: string | null;
+  notes: string | null;
+  added_date: string;
+  is_active: boolean;
+  created_by: number;
+  updated_at: string;
+};
+
+type AccessoryItem = {
+  id: number;
+  uuid: string;
+  item_name: string;
+  item_code: string;
+  accessory_color: string;
+  supplier: string | null;
+  location: string | null;
+  notes: string | null;
+  carton_quantity: number;
+  items_per_carton: number;
+  individual_items: number;
+  pump_quantity: number;
+  ring_quantity: number;
+  cover_quantity: number;
+  ribbon_quantity: number;
+  sticker_quantity: number;
+  tag_quantity: number;
+  added_date: string;
+  is_active: boolean;
+  created_by: number;
   updated_at: string;
 };
 
@@ -86,7 +154,285 @@ type StockMovement = {
   ip_address: string | null;
 };
 
-function formatDate(dateStr: string) {
+// UI Components
+const Card = ({ className, children, ...props }) => (
+  <div 
+    className={`bg-white/80 dark:bg-gray-800/80 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-200/50 dark:border-gray-600/50 overflow-hidden ${className}`}
+    {...props}
+  >
+    {children}
+  </div>
+);
+
+const CardHeader = ({ children, className }) => (
+  <div className={`p-4 border-b border-gray-200/50 dark:border-gray-600/50 ${className}`}>
+    {children}
+  </div>
+);
+
+const CardTitle = ({ children }) => (
+  <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+    {children}
+  </h2>
+);
+
+const CardContent = ({ children, className }) => (
+  <div className={`p-4 ${className}`}>
+    {children}
+  </div>
+);
+
+const Button = ({ onClick, children, variant = "default", className, loading, ...props }) => (
+  <button
+    onClick={onClick}
+    disabled={loading}
+    className={`px-4 py-2 rounded-xl transition-all duration-300 font-semibold flex items-center gap-2 ${
+      variant === "default"
+        ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-lg hover:shadow-xl"
+        : variant === "outline"
+        ? "border border-gray-300 dark:border-gray-600 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-800"
+        : variant === "red"
+        ? "bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800"
+        : "bg-gradient-to-r from-gray-600 to-gray-700 text-white hover:from-gray-700 hover:to-gray-800"
+    } ${loading ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
+    {...props}
+  >
+    {loading && <FiRefreshCw className="w-4 h-4 animate-spin" />}
+    {children}
+  </button>
+);
+
+const DataTable = ({ 
+  columns, 
+  data, 
+  isLoading, 
+  emptyMessage = "لا توجد بيانات متاحة",
+  onEdit,
+  onDelete,
+  showActions = false 
+}) => (
+  <div className="w-full max-h-[300px] overflow-y-auto font-tajawal rounded-xl">
+    {isLoading ? (
+      <div className="flex flex-col items-center justify-center py-8">
+        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+        <p className="text-sm text-gray-500">جاري التحميل...</p>
+      </div>
+    ) : !data || data.length === 0 ? (
+      <div className="flex flex-col items-center justify-center py-8 text-gray-500">
+        <Database className="w-12 h-12 opacity-50 mb-2" />
+        <p className="text-sm">{emptyMessage}</p>
+      </div>
+    ) : (
+      <table className="w-full text-right">
+        <thead>
+          <tr className="bg-gradient-to-r from-blue-50 to-blue-100 dark:from-gray-700 dark:to-gray-600">
+            {columns.map((col) => (
+              <th 
+                key={col.accessorKey} 
+                className="px-4 py-3 text-sm font-bold text-gray-900 dark:text-white border-b border-blue-200 dark:border-gray-600"
+              >
+                {col.header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, idx) => (
+            <tr 
+              key={idx} 
+              className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50/80 dark:hover:bg-gray-700/50 transition-colors"
+            >
+              {columns.map((col) => (
+                <td 
+                  key={col.accessorKey} 
+                  className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300"
+                >
+                  {col.accessorKey === 'actions' && showActions ? (
+                    <div className="flex gap-2 justify-center">
+                      <Button
+                        variant="outline"
+                        onClick={() => onEdit(row)}
+                        className="p-1"
+                      >
+                        <FiEdit className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="red"
+                        onClick={() => onDelete(row)}
+                        className="p-1"
+                      >
+                        <FiTrash className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    row[col.accessorKey] ?? "-"
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )}
+  </div>
+);
+
+const StatCard = ({ title, value, icon, color, trend, loading = false }) => (
+  <motion.div
+    className={`bg-gradient-to-br ${color} rounded-2xl p-6 text-white relative overflow-hidden shadow-lg hover:shadow-xl transition-all duration-300`}
+    whileHover={{ y: -4, scale: 1.02 }}
+    transition={{ type: "spring", stiffness: 300 }}
+  >
+    <div className="absolute top-0 right-0 w-20 h-20 bg-white/10 rounded-full -mr-4 -mt-4"></div>
+    <div className="relative">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold opacity-90">{title}</h3>
+        <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-sm">
+          {icon}
+        </div>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-lg font-bold">جاري التحميل...</p>
+        </div>
+      ) : (
+        <>
+          <p className="text-2xl font-bold mb-2">{value?.toLocaleString() ?? "0"}</p>
+          {trend && (
+            <div className="flex items-center gap-1 text-xs opacity-90">
+              {trend > 0 ? (
+                <TrendingUp className="w-3 h-3" />
+              ) : (
+                <TrendingDown className="w-3 h-3" />
+              )}
+              <span>{Math.abs(trend)}%</span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  </motion.div>
+);
+
+// Enhanced navigation cards with correct routes
+const navigationCards = [
+  {
+    title: "عرض المخزون",
+    description: "عرض جميع الأصناف المتاحة في المخزون الرئيسي",
+    icon: <FiBox className="text-2xl text-yellow-500" />,
+    to: "/manager/main-inventory/view-stock",
+    color: "from-yellow-500 to-amber-500"
+  },
+  {
+    title: "إضافة صنف جديد",
+    description: "إضافة أصناف جديدة إلى سجل المخزون",
+    icon: <FiPlus className="text-2xl text-green-500" />,
+    to: "/manager/main-inventory/add-item",
+    color: "from-green-500 to-emerald-500"
+  },
+  {
+    title: "تقارير المصنع",
+    description: "عرض تقارير صرف المصنع والتحليلات",
+    icon: <BarChart3 className="text-2xl text-orange-500" />,
+    to: "/manager/reports",
+    color: "from-orange-500 to-red-500"
+  },
+  {
+    title: "مخزون الإكسسوارات",
+    description: "إدارة أصناف الإكسسوارات والمستلزمات",
+    icon: <Package className="text-2xl text-purple-500" />,
+    to: "/manager/accessories/view-stock",
+    color: "from-purple-500 to-pink-500"
+  },
+];
+
+// Enhanced management cards
+const managementCards = [
+  {
+    icon: <PackageCheck size={32} className="text-blue-500" />,
+    title: "إدارة المخزون",
+    description: "راقب وحدّث حالة المنتجات داخل النظام بشكل كامل",
+    to: "/manager/inventory",
+    color: "from-blue-500 to-cyan-500"
+  },
+  {
+    icon: <Users2 size={32} className="text-green-500" />,
+    title: "إدارة المستخدمين",
+    description: "أضف أو عدّل صلاحيات الموظفين وسجلاتهم بسهولة",
+    to: "/manager/users",
+    color: "from-green-500 to-emerald-500"
+  },
+  {
+    icon: <BarChart3 size={32} className="text-purple-500" />,
+    title: "التقارير والتحليلات",
+    description: "استعرض تقارير الأداء والمبيعات والمخزون المفصلة",
+    to: "/manager/reports",
+    color: "from-purple-500 to-pink-500"
+  },
+];
+
+// Enhanced quick actions with correct routes
+const quickActions = [
+  {
+    title: "البحث والتعديل",
+    description: "ابحث عن الأصناف وقم بتعديلها بسرعة",
+    icon: <FiSearch className="w-5 h-5" />,
+    to: "/manager/main-inventory/search-edit",
+    color: "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+  },
+  {
+    title: "صرف للمصنع",
+    description: "تسجيل صرف أصناف للمصنع بسهولة",
+    icon: <Factory className="w-5 h-5" />,
+    to: "/manager/main-inventory/dispatch/dispatch-factory",
+    color: "bg-green-500/10 text-green-600 dark:text-green-400"
+  },
+  {
+    title: "تحويل للمطبعة",
+    description: "نقل أصناف إلى المطبعة بكفاءة",
+    icon: <Package className="w-5 h-5" />,
+    to: "/manager/main-inventory/transfer-to-print",
+    color: "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+  },
+];
+
+// Inventory Type Selector Component
+const InventoryTypeSelector = ({ inventoryType, onInventoryTypeChange }) => {
+  const inventoryTypes = [
+    { value: 'main-inventory', label: 'المخزن الرئيسي', color: 'from-blue-500 to-blue-600' },
+    { value: 'monofia', label: 'المنوفية', color: 'from-green-500 to-green-600' },
+    { value: 'matbaa', label: 'المطبعة', color: 'from-purple-500 to-purple-600' },
+    { value: 'accessories', label: 'الإكسسوارات', color: 'from-orange-500 to-orange-600' }
+  ];
+
+  return (
+    <div className="mb-6 p-4 bg-white dark:bg-gray-800 rounded-xl shadow-lg">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+        إدارة المخزون المتكامل
+      </h3>
+      <div className="flex flex-wrap gap-3">
+        {inventoryTypes.map((type) => (
+          <motion.button
+            key={type.value}
+            onClick={() => onInventoryTypeChange(type.value)}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            className={`px-6 py-3 rounded-xl font-semibold transition-all duration-300 ${
+              inventoryType === type.value
+                ? `bg-gradient-to-r ${type.color} text-white shadow-lg`
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+            }`}
+          >
+            {type.label}
+          </motion.button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+function formatDate(dateStr) {
   if (!dateStr) return '-';
 
   try {
@@ -109,7 +455,7 @@ function formatDate(dateStr: string) {
     const year = date.getFullYear();
 
     const arabicNumerals = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-    const toEasternArabic = (num: number) => {
+    const toEasternArabic = (num) => {
       return num.toString().split('').map(digit => arabicNumerals[parseInt(digit)]).join('');
     };
 
@@ -120,12 +466,13 @@ function formatDate(dateStr: string) {
   }
 }
 
-export default function ViewStockPage() {
+export default function ManagerDashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [items, setItems] = useState<InventoryItem[]>([]);
-  const [transferLogs, setTransferLogs] = useState<TransferLog[]>([]);
-  const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
+  const [inventoryType, setInventoryType] = useState('main-inventory');
+  const [items, setItems] = useState([]);
+  const [transferLogs, setTransferLogs] = useState([]);
+  const [stockMovements, setStockMovements] = useState([]);
   const [filters, setFilters] = useState({
     item_name: '',
     item_code: '',
@@ -137,8 +484,8 @@ export default function ViewStockPage() {
   });
   const [logFilters, setLogFilters] = useState({
     search: '',
-    from_date: null as Date | null,
-    to_date: null as Date | null,
+    from_date: null,
+    to_date: null,
     movement_type: '',
   });
   const [exportColumns, setExportColumns] = useState({
@@ -168,41 +515,87 @@ export default function ViewStockPage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [transferModalOpen, setTransferModalOpen] = useState(false);
   const [adjustmentModalOpen, setAdjustmentModalOpen] = useState(false);
-  const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
-  const [editForm, setEditForm] = useState<Partial<InventoryItem>>({});
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const [transferForm, setTransferForm] = useState({
     quantity: '',
     notes: '',
-    destination_location: 'MONOFIA' as 'MONOFIA' | 'MATBAA',
+    destination_location: 'MONOFIA',
   });
   const [adjustmentForm, setAdjustmentForm] = useState({
     quantity: '',
-    operation: 'ADD' as 'ADD' | 'DEDUCT',
+    operation: 'ADD',
     notes: '',
   });
   const [actionLoading, setActionLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notif, setNotif] = useState({ show: false, msg: '', type: 'success' as 'success' | 'error' });
+  const [error, setError] = useState(null);
+  const [notif, setNotif] = useState({ show: false, msg: '', type: 'success' });
+  const [darkMode, setDarkMode] = useState(true);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [stats, setStats] = useState(null);
 
   const apiUrl = import.meta.env.VITE_API_URL;
 
   // Show notification
-  const showNotification = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
+  const showNotification = useCallback((msg, type = 'success') => {
     setNotif({ show: true, msg, type });
     setTimeout(() => setNotif({ show: false, msg: '', type: 'success' }), 3000);
   }, []);
 
+  const toggleDarkMode = useCallback(() => {
+    setDarkMode(prev => !prev);
+    document.documentElement.classList.toggle('dark');
+  }, []);
+
+  // Get API endpoints based on inventory type
+  const getApiEndpoints = () => {
+    switch (inventoryType) {
+      case 'monofia':
+        return {
+          view: '/monofia-inventory',
+          create: '/monofia-inventory',
+          update: (id) => `/monofia-inventory/${id}`,
+          delete: (id) => `/monofia-inventory/${id}`,
+          export: '/monofia-inventory/export'
+        };
+      case 'matbaa':
+        return {
+          view: '/matbaa-inventory',
+          create: '/matbaa-inventory',
+          update: (id) => `/matbaa-inventory/${id}`,
+          delete: (id) => `/matbaa-inventory/${id}`,
+          export: '/matbaa-inventory/export'
+        };
+      case 'accessories':
+        return {
+          view: '/accessory-items',
+          create: '/accessory-items',
+          update: (id) => `/accessory-items/${id}`,
+          delete: (id) => `/accessory-items/${id}`,
+          export: '/accessory-items/export'
+        };
+      default: // main-inventory
+        return {
+          view: '/inventory-items',
+          create: '/inventory-items',
+          update: (id) => `/inventory-items/${id}`,
+          delete: (id) => `/inventory-items/${id}`,
+          export: '/inventory-items/export'
+        };
+    }
+  };
+
   // Calculate statistics based on schema fields
-  const calculateStats = useCallback(() => {
+  const calculateStats = useCallback((items) => {
     const totalItems = items.length;
-    const totalQuantity = items.reduce((sum, item) => sum + item.total_quantity, 0);
-    const totalRemaining = items.reduce((sum, item) => sum + item.remaining_quantity, 0);
+    const totalQuantity = items.reduce((sum, item) => sum + (item.total_quantity || 0), 0);
+    const totalRemaining = items.reduce((sum, item) => sum + (item.remaining_quantity || 0), 0);
     const lowStockItems = items.filter(item => 
-      item.remaining_quantity < (item.min_stock_level || 10) && item.remaining_quantity > 0
+      (item.remaining_quantity || 0) < (item.min_stock_level || 10) && (item.remaining_quantity || 0) > 0
     ).length;
-    const outOfStockItems = items.filter(item => item.remaining_quantity === 0).length;
+    const outOfStockItems = items.filter(item => (item.remaining_quantity || 0) === 0).length;
     const highStockItems = items.filter(item => 
-      item.max_stock_level ? item.remaining_quantity >= item.max_stock_level : item.remaining_quantity >= 50
+      item.max_stock_level ? (item.remaining_quantity || 0) >= item.max_stock_level : (item.remaining_quantity || 0) >= 50
     ).length;
 
     return {
@@ -213,9 +606,7 @@ export default function ViewStockPage() {
       outOfStockItems,
       highStockItems
     };
-  }, [items]);
-
-  const stats = calculateStats();
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -236,22 +627,23 @@ export default function ViewStockPage() {
     const month = arabicMonths[now.getMonth()];
     const year = now.getFullYear();
     const arabicNumerals = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-    const toEasternArabic = (num: number) => {
+    const toEasternArabic = (num) => {
       return num.toString().split('').map(digit => arabicNumerals[parseInt(digit)]).join('');
     };
     setCurrentDate(`${toEasternArabic(day)} ${month} ${toEasternArabic(year)}`);
-  }, [navigate, user]);
+  }, [navigate, user, inventoryType]);
 
   const fetchFilteredData = async () => {
     setLoading(true);
     try {
+      const endpoints = getApiEndpoints();
       const queryParams = new URLSearchParams();
       Object.entries(filters).forEach(([key, value]) => {
         if (value) queryParams.append(key, value);
       });
 
       const response = await fetch(
-        `${apiUrl}/inventory/inventory-items?${queryParams}`,
+        `${apiUrl}${endpoints.view}?${queryParams}`,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -264,6 +656,7 @@ export default function ViewStockPage() {
         const data = await response.json();
         setItems(data);
         setResultCount(data.length);
+        setStats(calculateStats(data));
 
         if (data.length === 0) {
           showNotification('لم يتم العثور على نتائج.', 'error');
@@ -281,7 +674,7 @@ export default function ViewStockPage() {
         }
         showNotification(`فشل في جلب البيانات: ${errorData.error || 'خطأ غير معروف'}`, 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'خطأ غير معروف';
       showNotification(`فشل في جلب البيانات: ${errorMessage}`, 'error');
     } finally {
@@ -298,7 +691,7 @@ export default function ViewStockPage() {
       if (logFilters.to_date) queryParams.append('to_date', logFilters.to_date.toISOString());
 
       const response = await fetch(
-        `${apiUrl}/inventory/location-transfers?${queryParams}`,
+        `${apiUrl}/location-transfers?${queryParams}`,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -315,7 +708,7 @@ export default function ViewStockPage() {
         console.error('Server response for logs:', text);
         showNotification('فشل في جلب سجل التحويلات', 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'خطأ غير معروف';
       showNotification(`فشل في جلب سجل التحويلات: ${errorMessage}`, 'error');
     } finally {
@@ -333,7 +726,7 @@ export default function ViewStockPage() {
       if (logFilters.movement_type) queryParams.append('movement_type', logFilters.movement_type);
 
       const response = await fetch(
-        `${apiUrl}/inventory/stock-movements?${queryParams}`,
+        `${apiUrl}/stock-movements?${queryParams}`,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -350,7 +743,7 @@ export default function ViewStockPage() {
         console.error('Server response for movements:', text);
         showNotification('فشل في جلب حركات المخزون', 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'خطأ غير معروف';
       showNotification(`فشل في جلب حركات المخزون: ${errorMessage}`, 'error');
     } finally {
@@ -407,7 +800,7 @@ export default function ViewStockPage() {
         switch (col) {
           case 'item_name': return item.item_name;
           case 'item_code': return item.item_code;
-          case 'color': return item.color || '-';
+          case 'color': return item.color || item.accessory_color || '-';
           case 'carton_quantity': return item.carton_quantity;
           case 'items_per_carton': return item.items_per_carton;
           case 'individual_items': return item.individual_items;
@@ -454,17 +847,17 @@ export default function ViewStockPage() {
           case 'item_code': return log.item_code;
           case 'color': return log.color || '-';
           case 'movement_type': return getMovementTypeArabic(log.movement_type);
-          case 'quantity_in': return (log as StockMovement).quantity_in;
-          case 'quantity_out': return (log as StockMovement).quantity_out;
-          case 'balance_after': return (log as StockMovement).balance_after;
-          case 'transfer_quantity': return (log as TransferLog).transfer_quantity;
-          case 'transfer_date': return formatDate((log as TransferLog).transfer_date);
-          case 'username': return (log as TransferLog).username;
+          case 'quantity_in': return log.quantity_in;
+          case 'quantity_out': return log.quantity_out;
+          case 'balance_after': return log.balance_after;
+          case 'transfer_quantity': return log.transfer_quantity;
+          case 'transfer_date': return formatDate(log.transfer_date);
+          case 'username': return log.username;
           case 'supplier': return log.supplier || '-';
           case 'notes': return log.notes || '-';
           case 'source_location': return getLocationArabic(log.source_location || '');
           case 'destination_location': return getLocationArabic(log.destination_location || '');
-          case 'created_at': return formatDate((log as StockMovement).created_at);
+          case 'created_at': return formatDate(log.created_at);
           default: return '';
         }
       })
@@ -476,8 +869,8 @@ export default function ViewStockPage() {
     showNotification('تم تصدير السجل بنجاح');
   };
 
-  const getMovementTypeArabic = (type: string) => {
-    const types: { [key: string]: string } = {
+  const getMovementTypeArabic = (type) => {
+    const types = {
       'ADDITION': 'إضافة',
       'PURCHASE': 'شراء',
       'SALE': 'بيع',
@@ -489,8 +882,8 @@ export default function ViewStockPage() {
     return types[type] || type;
   };
 
-  const getLocationArabic = (location: string) => {
-    const locations: { [key: string]: string } = {
+  const getLocationArabic = (location) => {
+    const locations = {
       'MAIN_INVENTORY': 'المخزون الرئيسي',
       'MONOFIA': 'المنوفية',
       'MATBAA': 'المطبعة',
@@ -499,12 +892,12 @@ export default function ViewStockPage() {
     return locations[location] || location;
   };
 
-  const handleEdit = (item: InventoryItem) => {
+  const handleEdit = (item) => {
     setSelectedItem(item);
     setEditForm({
       item_name: item.item_name,
       item_code: item.item_code,
-      color: item.color,
+      color: item.color || item.accessory_color,
       carton_quantity: item.carton_quantity,
       items_per_carton: item.items_per_carton,
       individual_items: item.individual_items,
@@ -517,12 +910,12 @@ export default function ViewStockPage() {
     setEditModalOpen(true);
   };
 
-  const handleDelete = (item: InventoryItem) => {
+  const handleDelete = (item) => {
     setSelectedItem(item);
     setDeleteModalOpen(true);
   };
 
-  const handleTransfer = (item: InventoryItem) => {
+  const handleTransfer = (item) => {
     setSelectedItem(item);
     setTransferForm({
       quantity: '',
@@ -532,7 +925,7 @@ export default function ViewStockPage() {
     setTransferModalOpen(true);
   };
 
-  const handleAdjustment = (item: InventoryItem) => {
+  const handleAdjustment = (item) => {
     setSelectedItem(item);
     setAdjustmentForm({
       quantity: '',
@@ -556,8 +949,9 @@ export default function ViewStockPage() {
       };
       console.log('Submitting edit with payload:', payload);
 
+      const endpoints = getApiEndpoints();
       const response = await fetch(
-        `${apiUrl}/inventory/inventory-items/${selectedItem.id}`,
+        `${apiUrl}${endpoints.update(selectedItem.id)}`,
         {
           method: 'PUT',
           headers: {
@@ -588,7 +982,7 @@ export default function ViewStockPage() {
         setError(errorData.error || 'فشل في تحديث الصنف');
         showNotification(errorData.error || 'فشل في تحديث الصنف', 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'خطأ غير معروف';
       setError(errorMsg);
       showNotification(errorMsg, 'error');
@@ -602,8 +996,9 @@ export default function ViewStockPage() {
     setActionLoading(true);
     setError(null);
     try {
+      const endpoints = getApiEndpoints();
       const response = await fetch(
-        `${apiUrl}/inventory/inventory-items/${selectedItem.id}`,
+        `${apiUrl}${endpoints.delete(selectedItem.id)}`,
         {
           method: 'DELETE',
           headers: {
@@ -632,7 +1027,7 @@ export default function ViewStockPage() {
         setError(errorData.error || 'فشل في حذف الصنف');
         showNotification(errorData.error || 'فشل في حذف الصنف', 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'خطأ غير معروف';
       setError(errorMsg);
       showNotification(errorMsg, 'error');
@@ -664,7 +1059,7 @@ export default function ViewStockPage() {
       const payload = {
         item_name: selectedItem.item_name,
         item_code: selectedItem.item_code,
-        color: selectedItem.color,
+        color: selectedItem.color || selectedItem.accessory_color,
         quantity: quantity,
         source_location: selectedItem.location || 'MAIN_INVENTORY',
         destination_location: transferForm.destination_location,
@@ -675,7 +1070,7 @@ export default function ViewStockPage() {
       console.log('Submitting transfer with payload:', payload);
 
       const response = await fetch(
-        `${apiUrl}/inventory/transfer-between-locations`,
+        `${apiUrl}/transfer-between-locations`,
         {
           method: 'POST',
           headers: {
@@ -714,7 +1109,7 @@ export default function ViewStockPage() {
         setError(errorData.error || 'فشل في عملية التحويل');
         showNotification(errorData.error || 'فشل في عملية التحويل', 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'خطأ غير معروف';
       setError(errorMsg);
       showNotification(errorMsg, 'error');
@@ -748,7 +1143,7 @@ export default function ViewStockPage() {
       console.log('Submitting adjustment with payload:', payload);
 
       const response = await fetch(
-        `${apiUrl}/inventory/adjust-stock`,
+        `${apiUrl}/adjust-stock`,
         {
           method: 'POST',
           headers: {
@@ -786,7 +1181,7 @@ export default function ViewStockPage() {
         setError(errorData.error || 'فشل في تعديل المخزون');
         showNotification(errorData.error || 'فشل في تعديل المخزون', 'error');
       }
-    } catch (error: unknown) {
+    } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'خطأ غير معروف';
       setError(errorMsg);
       showNotification(errorMsg, 'error');
@@ -795,21 +1190,21 @@ export default function ViewStockPage() {
     }
   };
 
-  const getStockLevelColor = (remaining: number) => {
+  const getStockLevelColor = (remaining) => {
     if (remaining === 0) return 'text-red-600 dark:text-red-400';
     if (remaining < 10) return 'text-amber-600 dark:text-amber-400';
     if (remaining < 50) return 'text-yellow-600 dark:text-yellow-400';
     return 'text-green-600 dark:text-green-400';
   };
 
-  const getStockLevelBg = (remaining: number) => {
+  const getStockLevelBg = (remaining) => {
     if (remaining === 0) return 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800';
     if (remaining < 10) return 'bg-amber-50 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800';
     if (remaining < 50) return 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800';
     return 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800';
   };
 
-  const StockLevelIndicator = ({ remaining, total }: { remaining: number; total: number }) => {
+  const StockLevelIndicator = ({ remaining, total }) => {
     const percentage = total > 0 ? (remaining / total) * 100 : 0;
     return (
       <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mt-1 shadow-inner">
@@ -829,73 +1224,176 @@ export default function ViewStockPage() {
     );
   };
 
-  const StatCard = ({ title, value, icon, color, trend }: { title: string; value: number; icon: React.ReactNode; color: string; trend?: string }) => (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={`bg-gradient-to-br ${color} rounded-2xl p-6 text-white relative overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,0.2)] transform transition-all duration-300 hover:scale-105 hover:shadow-[0_12px_40px_rgba(0,0,0,0.3)]`}
-    >
-      <div className="absolute top-0 right-0 w-24 h-24 bg-white/10 rounded-full -mr-6 -mt-6 transform rotate-45"></div>
-      <div className="relative">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold opacity-90">{title}</h3>
-          <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center shadow-md backdrop-blur-sm">
-            {icon}
-          </div>
-        </div>
-        <p className="text-2xl font-bold mb-2 drop-shadow-md">{value.toLocaleString()}</p>
-        {trend && (
-          <div className="flex items-center gap-1 text-xs opacity-90">
-            <TrendingUp className="w-3 h-3" />
-            <span>{trend}</span>
-          </div>
-        )}
+  // Enhanced Dashboard Content Component
+  const DashboardContent = () => (
+    <div className="space-y-6">
+      {/* Stats Section */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          title="إجمالي الأصناف"
+          value={stats?.totalItems || 0}
+          icon={<Package className="text-white w-6 h-6" />}
+          color="from-blue-500 to-blue-600"
+          trend={12}
+          loading={loading}
+        />
+        <StatCard
+          title="قيمة المخزون"
+          value={stats?.totalQuantity || 0}
+          icon={<BarChart3 className="text-white w-6 h-6" />}
+          color="from-green-500 to-green-600"
+          trend={8}
+          loading={loading}
+        />
+        <StatCard
+          title="أصناف منخفضة"
+          value={stats?.lowStockItems || 0}
+          icon={<TrendingDown className="text-white w-6 h-6" />}
+          color="from-amber-500 to-amber-600"
+          loading={loading}
+        />
+        <StatCard
+          title="أصناف منتهية"
+          value={stats?.outOfStockItems || 0}
+          icon={<XCircle className="text-white w-6 h-6" />}
+          color="from-red-500 to-red-600"
+          loading={loading}
+        />
       </div>
-    </motion.div>
+
+      {/* Management Cards */}
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+        {managementCards.map((card, index) => (
+          <Link to={card.to} key={index}>
+            <motion.div
+              className="bg-gradient-to-br from-gray-50 to-white dark:from-gray-800 dark:to-gray-700 rounded-2xl shadow-lg p-6 hover:shadow-2xl overflow-hidden border border-gray-200/50 dark:border-gray-600/50"
+              whileHover={{ y: -8, scale: 1.02 }}
+              transition={{ type: "spring", stiffness: 300 }}
+            >
+              <div className={`w-14 h-14 bg-gradient-to-br ${card.color} rounded-xl flex items-center justify-center mb-4 shadow-lg`}>
+                {card.icon}
+              </div>
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-2">{card.title}</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">{card.description}</p>
+            </motion.div>
+          </Link>
+        ))}
+      </div>
+
+      {/* Current Inventory Table */}
+      <Card className="shadow-xl">
+        <CardHeader>
+          <div className="flex justify-between items-center">
+            <CardTitle>
+              <PackageCheck className="w-5 h-5" />
+              المخزون الحالي - {inventoryType === 'monofia' ? 'المنوفية' : 
+               inventoryType === 'matbaa' ? 'المطبعة' : 
+               inventoryType === 'accessories' ? 'الإكسسوارات' : 'المخزون الرئيسي'}
+            </CardTitle>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex items-center" onClick={exportToExcel}>
+                <FiDownload className="w-4 h-4 ml-2" />
+                تصدير
+              </Button>
+              <Button variant="outline" className="flex items-center">
+                <FiPrinter className="w-4 h-4 ml-2" />
+                طباعة
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <DataTable 
+            columns={[
+              { header: 'الصنف', accessorKey: 'item_name' },
+              { header: 'الكود', accessorKey: 'item_code' },
+              { header: 'اللون', accessorKey: 'color' },
+              { header: 'الكمية المتاحة', accessorKey: 'remaining_quantity' },
+              { header: 'الإجراءات', accessorKey: 'actions' },
+            ]} 
+            data={items.slice(0, 8).map(item => ({
+              ...item,
+              color: item.color || item.accessory_color || 'غير محدد',
+              actions: 'actions'
+            }))} 
+            isLoading={loading}
+            emptyMessage="لا توجد بيانات المخزون"
+            showActions={true}
+            onEdit={handleEdit}
+            onDelete={handleDelete}
+          />
+        </CardContent>
+      </Card>
+    </div>
   );
 
-  const columnLabels: { [key: string]: string } = {
-    item_name: 'اسم الصنف',
-    item_code: 'الكود',
-    color: 'اللون',
-    carton_quantity: 'عدد الكراتين',
-    items_per_carton: 'عدد في الكرتونة',
-    individual_items: 'عدد القزاز الفردي',
-    total_quantity: 'الكمية الإجمالية',
-    remaining_quantity: 'الكمية المتبقية',
-    supplier: 'المورد',
-    location: 'الموقع',
-    notes: 'ملاحظات',
-    added_date: 'تاريخ الإضافة',
-    actions: 'الإجراءات',
-  };
+  // Enhanced Navigation Content Component
+  const NavigationContent = () => (
+    <div className="space-y-6">
+      {/* Navigation Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {navigationCards.map((card, i) => (
+          <Link
+            key={i}
+            to={card.to}
+            className="block group"
+          >
+            <motion.div
+              className="bg-gradient-to-br from-gray-50 to-white dark:from-gray-800 dark:to-gray-700 rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2 p-6 border border-gray-200/50 dark:border-gray-600/50 h-full flex flex-col justify-between"
+              whileHover={{ scale: 1.02 }}
+              transition={{ type: "spring", stiffness: 300 }}
+            >
+              <div className={`w-12 h-12 bg-gradient-to-br ${card.color} rounded-xl flex items-center justify-center mb-4 shadow-lg group-hover:scale-110 transition-transform duration-300`}>
+                {card.icon}
+              </div>
+              <div>
+                <h2 className="font-bold text-lg text-gray-900 dark:text-white mb-2 group-hover:text-gray-700 dark:group-hover:text-gray-300 transition-colors">
+                  {card.title}
+                </h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                  {card.description}
+                </p>
+              </div>
+            </motion.div>
+          </Link>
+        ))}
+      </div>
 
-  const transferLogColumnLabels: { [key: string]: string } = {
-    item_name: 'اسم الصنف',
-    item_code: 'الكود',
-    color: 'اللون',
-    transfer_quantity: 'الكمية المحولة',
-    transfer_date: 'تاريخ التحويل',
-    username: 'المستخدم',
-    supplier: 'المورد',
-    notes: 'ملاحظات',
-    source_location: 'المصدر',
-    destination_location: 'الوجهة',
-  };
-
-  const movementColumnLabels: { [key: string]: string } = {
-    item_name: 'اسم الصنف',
-    item_code: 'الكود',
-    color: 'اللون',
-    movement_type: 'نوع الحركة',
-    quantity_in: 'الكمية الداخلة',
-    quantity_out: 'الكمية الخارجة',
-    balance_after: 'الرصيد بعد',
-    source_location: 'المصدر',
-    destination_location: 'الوجهة',
-    notes: 'ملاحظات',
-    created_at: 'تاريخ الحركة',
-  };
+      {/* Quick Actions */}
+      <Card className="shadow-xl">
+        <CardHeader>
+          <CardTitle>
+            <Package className="w-5 h-5" />
+            العمليات السريعة
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {quickActions.map((action, i) => (
+            <Link
+              key={i}
+              to={action.to}
+              className="block group"
+            >
+              <motion.div
+                className={`p-4 rounded-xl border-2 border-gray-200/50 dark:border-gray-600/50 hover:border-transparent transition-all duration-300 transform hover:-translate-y-1 flex justify-between items-center min-h-[100px] group-hover:shadow-lg ${action.color}`}
+                whileHover={{ scale: 1.02 }}
+              >
+                <div className="text-right flex-1">
+                  <h3 className="font-semibold flex items-center justify-end gap-2 text-sm mb-2">
+                    {action.title}
+                    {action.icon}
+                  </h3>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+                    {action.description}
+                  </p>
+                </div>
+              </motion.div>
+            </Link>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
 
   if (!user) {
     return (
@@ -908,7 +1406,7 @@ export default function ViewStockPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50/90 via-indigo-50/90 to-purple-100/90 dark:from-gray-900/90 dark:via-gray-800/90 dark:to-gray-700/90 dir-rtl font-tajawal">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50/90 via-indigo-50/90 to-purple-100/90 dark:from-gray-900/90 dark:via-gray-800/90 dark:to-gray-700/90 dir-rtl font-tajawal p-4 sm:p-6">
       {/* Notification */}
       <AnimatePresence>
         {notif.show && (
@@ -933,567 +1431,69 @@ export default function ViewStockPage() {
         )}
       </AnimatePresence>
 
-      <div className="p-4 sm:p-6 max-w-full overflow-hidden">
-        {/* Header Section */}
-        <motion.div 
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.3)] p-6 text-white relative overflow-hidden transform transition-all duration-300 hover:shadow-[0_12px_50px_rgba(0,0,0,0.4)]"
-        >
-          <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent backdrop-blur-sm"></div>
-          <div className="relative flex flex-col lg:flex-row justify-between items-center gap-6">
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center shadow-lg backdrop-blur-md border border-white/30 transform transition-all duration-300 hover:scale-110">
-                <Database className="text-2xl" />
-              </div>
-              <div>
-                <h1 className="text-2xl md:text-3xl font-bold drop-shadow-lg">
-                  {showLogs ? 'سجل تحويلات المخزون' : showMovements ? 'حركات المخزون' : 'إدارة المخزون الرئيسي'}
-                </h1>
-                <p className="text-lg opacity-90 mt-1">نظام متكامل لإدارة المخزون والتحويلات</p>
-              </div>
+      {/* Header */}
+      <motion.div 
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mb-6 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700 rounded-2xl shadow-2xl p-6 text-white relative overflow-hidden"
+      >
+        <div className="absolute inset-0 bg-black/10"></div>
+        <div className="relative flex flex-col lg:flex-row justify-between items-center gap-6">
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center shadow-lg backdrop-blur-sm border border-white/30">
+              <Database className="text-2xl" />
             </div>
-            <div className="flex flex-wrap justify-center gap-3">
-              <div className="bg-white/20 rounded-xl px-4 py-2 backdrop-blur-md border border-white/30 shadow-md transform transition-all duration-300 hover:scale-105">
-                <p className="text-sm opacity-90">المستخدم</p>
-                <p className="font-semibold">{user?.name || 'غير معروف'}</p>
-              </div>
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold drop-shadow-lg">
+                {activeTab === "dashboard" ? 'لوحة التحكم الرئيسية' : 'مركز التنقل السريع'}
+              </h1>
+              <p className="text-lg opacity-90 mt-1">نظام إدارة المخزون المتكامل</p>
             </div>
           </div>
-        </motion.div>
-
-        {/* Statistics Dashboard */}
-        {!showLogs && !showMovements && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8"
-          >
-            <StatCard
-              title="إجمالي الأصناف"
-              value={stats.totalItems}
-              icon={<FiBox className="w-5 h-5" />}
-              color="from-blue-500 to-blue-600"
-              trend="+12%"
-            />
-            <StatCard
-              title="إجمالي الكمية"
-              value={stats.totalQuantity}
-              icon={<FiPackage className="w-5 h-5" />}
-              color="from-green-500 to-green-600"
-              trend="+8%"
-            />
-            <StatCard
-              title="أصناف منخفضة"
-              value={stats.lowStockItems}
-              icon={<TrendingDown className="w-5 h-5" />}
-              color="from-amber-500 to-amber-600"
-              trend="تحذير"
-            />
-            <StatCard
-              title="أصناف منتهية"
-              value={stats.outOfStockItems}
-              icon={<XCircle className="w-5 h-5" />}
-              color="from-red-500 to-red-600"
-              trend="انتباه"
-            />
-          </motion.div>
-        )}
-
-        {/* Action Bar */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="flex flex-col lg:flex-row justify-between items-center gap-4 mb-6"
-        >
-          <div className="flex flex-col sm:flex-row gap-3 flex-1 w-full">
+          <div className="flex flex-wrap justify-center gap-3">
+            <div className="bg-white/20 rounded-xl px-4 py-2 backdrop-blur-sm border border-white/30">
+              <p className="text-sm opacity-90">المستخدم</p>
+              <p className="font-semibold">{user?.name || "مدير النظام"}</p>
+            </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  setShowLogs(false);
-                  setShowMovements(false);
-                }}
-                className={`px-4 py-3 rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] transition-all duration-300 flex items-center justify-center gap-2 font-semibold transform hover:scale-105 ${
-                  !showLogs && !showMovements 
-                    ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white' 
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
-                }`}
+              <Button
+                onClick={() => setActiveTab("dashboard")}
+                variant={activeTab === "dashboard" ? "default" : "outline"}
+                className="bg-white/20 hover:bg-white/30 border-white/30"
               >
-                <FiBox className="w-4 h-4" />
-                المخزون
-              </button>
-              <button
-                onClick={() => {
-                  setShowLogs(true);
-                  setShowMovements(false);
-                  fetchTransferLogs();
-                }}
-                className={`px-4 py-3 rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] transition-all duration-300 flex items-center justify-center gap-2 font-semibold transform hover:scale-105 ${
-                  showLogs 
-                    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white' 
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
-                }`}
+                📊 لوحة التحكم
+              </Button>
+              <Button
+                onClick={() => setActiveTab("navigation")}
+                variant={activeTab === "navigation" ? "default" : "outline"}
+                className="bg-white/20 hover:bg-white/30 border-white/30"
               >
-                <FiArrowLeft className="w-4 h-4" />
-                سجل التحويلات
-              </button>
-              <button
-                onClick={() => {
-                  setShowMovements(true);
-                  setShowLogs(false);
-                  fetchStockMovements();
-                }}
-                className={`px-4 py-3 rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] transition-all duration-300 flex items-center justify-center gap-2 font-semibold transform hover:scale-105 ${
-                  showMovements 
-                    ? 'bg-gradient-to-r from-green-600 to-green-700 text-white' 
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
-                }`}
+                🚀 التنقل السريع
+              </Button>
+              <Button
+                onClick={toggleDarkMode}
+                variant="outline"
+                className="bg-white/20 hover:bg-white/30 border-white/30"
               >
-                <FiRefreshCw className="w-4 h-4" />
-                حركات المخزون
-              </button>
-            </div>
-            
-            <div className="flex-1 relative">
-              <input
-                type="text"
-                value={showLogs || showMovements ? logFilters.search : filters.item_name}
-                onChange={(e) => {
-                  if (showLogs || showMovements) {
-                    setLogFilters({ ...logFilters, search: e.target.value });
-                  } else {
-                    setFilters({ ...filters, item_name: e.target.value });
-                  }
-                }}
-                placeholder={
-                  showLogs ? "ابحث في سجل التحويلات..." : 
-                  showMovements ? "ابحث في حركات المخزون..." : 
-                  "ابحث في المخزون..."
-                }
-                className="w-full p-3 pr-12 bg-white/90 dark:bg-gray-700/90 rounded-xl border-2 border-blue-200 dark:border-blue-600 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 text-lg font-bold transition-all duration-300 shadow-[0_4px_15px_rgba(0,0,0,0.1)] backdrop-blur-md transform hover:scale-101"
-              />
-              <FiSearch className="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500 text-xl" />
+                {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              </Button>
             </div>
           </div>
+        </div>
+      </motion.div>
 
-          <div className="flex flex-wrap justify-center gap-2">
-            {!showLogs && !showMovements && (
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className="px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] hover:from-blue-700 hover:to-blue-800 transition-all duration-300 hover:shadow-[0_6px_20px_rgba(0,0,0,0.3)] flex items-center gap-2 font-semibold transform hover:scale-105"
-              >
-                <FiFilter className="w-4 h-4" />
-                {showFilters ? 'إخفاء الفلتر' : 'عرض الفلتر'}
-              </button>
-            )}
-            <button
-              onClick={showLogs || showMovements ? exportLogsToExcel : exportToExcel}
-              className="px-4 py-3 bg-gradient-to-r from-gray-600 to-gray-700 text-white rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] hover:from-gray-700 hover:to-gray-800 transition-all duration-300 hover:shadow-[0_6px_20px_rgba(0,0,0,0.3)] flex items-center gap-2 font-semibold transform hover:scale-105"
-            >
-              <FiDownload className="w-4 h-4" />
-              تصدير Excel
-            </button>
-          </div>
-        </motion.div>
+      {/* Inventory Type Selector */}
+      <InventoryTypeSelector 
+        inventoryType={inventoryType} 
+        onInventoryTypeChange={setInventoryType} 
+      />
 
-        {/* Advanced Filters */}
-        <AnimatePresence>
-          {showFilters && !showLogs && !showMovements && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="mb-6 overflow-hidden"
-            >
-              <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-xl rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.2)] p-6 border border-gray-200/50 dark:border-gray-600/50">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                  {[
-                    { label: 'الكود', key: 'item_code', icon: <FiBox className="w-4 h-4" /> },
-                    { label: 'اللون', key: 'color', icon: <FiPackage className="w-4 h-4" /> },
-                    { label: 'المورد', key: 'supplier', icon: <FiUser className="w-4 h-4" /> },
-                    { label: 'الموقع', key: 'location', icon: <FiMapPin className="w-4 h-4" /> },
-                    { label: 'من تاريخ', key: 'from_date', type: 'date', icon: <FiClock className="w-4 h-4" /> },
-                    { label: 'إلى تاريخ', key: 'to_date', type: 'date', icon: <FiClock className="w-4 h-4" /> },
-                  ].map((field) => (
-                    <div key={field.key} className="flex flex-col gap-2">
-                      <label className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                        {field.icon}
-                        {field.label}
-                      </label>
-                      <Input
-                        type={field.type || 'text'}
-                        value={filters[field.key]}
-                        onChange={(e) => setFilters({ ...filters, [field.key]: e.target.value })}
-                        onKeyDown={(e) => e.key === 'Enter' && fetchFilteredData()}
-                        placeholder={field.label}
-                        className="p-3 text-right text-sm bg-white/90 dark:bg-gray-700/90 rounded-xl border-2 border-blue-200 dark:border-blue-600 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 transition-all duration-300 shadow-[0_4px_15px_rgba(0,0,0,0.1)] backdrop-blur-md"
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div className="flex justify-end gap-3">
-                  <button
-                    onClick={fetchFilteredData}
-                    className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] hover:from-blue-700 hover:to-blue-800 transition-all duration-300 hover:shadow-[0_6px_20px_rgba(0,0,0,0.3)] font-semibold transform hover:scale-105"
-                  >
-                    تطبيق التصفية
-                  </button>
-                  <button
-                    onClick={resetFilters}
-                    className="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] hover:from-orange-600 hover:to-orange-700 transition-all duration-300 hover:shadow-[0_6px_20px_rgba(0,0,0,0.3)] font-semibold transform hover:scale-105"
-                  >
-                    إعادة تعيين
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Main Content */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-xl rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.2)] overflow-hidden border border-gray-200/50 dark:border-gray-600/50"
-        >
-          {/* Table Header */}
-          <div className="p-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-center sticky top-0 z-10 shadow-[0_4px_15px_rgba(0,0,0,0.2)]">
-            <h2 className="text-xl font-bold drop-shadow-md">
-              {showLogs ? 'سجل تحويلات المخزون' : 
-               showMovements ? 'حركات المخزون' : 
-               'الأصناف المتاحة في المخزون'}
-            </h2>
-          </div>
-
-          {showMovements ? (
-            /* Stock Movements Table */
-            <div className="overflow-x-auto">
-              <div className="overflow-y-auto max-h-[600px]">
-                <table className="w-full">
-                  <thead className="sticky top-0 z-10">
-                    <tr className="bg-gradient-to-r from-green-600 to-green-700 text-white shadow-[0_4px_15px_rgba(0,0,0,0.2)]">
-                      {Object.keys(movementColumnLabels).map((header) => (
-                        <th
-                          key={header}
-                          className="p-4 text-center text-sm font-bold whitespace-nowrap border-b border-white/20"
-                        >
-                          {movementColumnLabels[header]}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {movementsLoading ? (
-                      <tr>
-                        <td colSpan={Object.keys(movementColumnLabels).length} className="p-8 text-center">
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full animate-spin"></div>
-                            <p className="text-gray-500 dark:text-gray-400 font-semibold">جارٍ تحميل حركات المخزون...</p>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : stockMovements.length > 0 ? (
-                      stockMovements.map((movement, index) => (
-                        <motion.tr
-                          key={movement.id}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: index * 0.05 }}
-                          className="hover:bg-gray-50/80 dark:hover:bg-gray-700/50 transition-colors duration-200 transform hover:scale-[1.005]"
-                        >
-                          <td className="p-4 text-center font-semibold text-gray-900 dark:text-white">{movement.item_name}</td>
-                          <td className="p-4 text-center">
-                            <span className="bg-blue-100 text-blue-800 font-bold px-3 py-1 rounded-lg border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700 shadow-sm">
-                              {movement.item_code}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className="bg-purple-100 text-purple-800 font-bold px-3 py-1 rounded-lg border border-purple-300 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700 shadow-sm">
-                              {movement.color || '-'}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className={`px-3 py-1 rounded-lg border font-bold ${
-                              movement.movement_type === 'ADDITION' || movement.movement_type === 'PURCHASE'
-                                ? 'bg-green-100 text-green-800 border-green-300 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700'
-                                : movement.movement_type === 'SALE' || movement.movement_type === 'DEDUCT'
-                                ? 'bg-red-100 text-red-800 border-red-300 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700'
-                                : 'bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700'
-                            }`}>
-                              {getMovementTypeArabic(movement.movement_type)}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center font-bold text-green-600 dark:text-green-400">{movement.quantity_in}</td>
-                          <td className="p-4 text-center font-bold text-red-600 dark:text-red-400">{movement.quantity_out}</td>
-                          <td className="p-4 text-center font-bold text-lg text-amber-600 dark:text-amber-400">{movement.balance_after}</td>
-                          <td className="p-4 text-center">{getLocationArabic(movement.source_location || '')}</td>
-                          <td className="p-4 text-center">{getLocationArabic(movement.destination_location || '')}</td>
-                          <td className="p-4 text-center max-w-[200px]">
-                            <div className="truncate" title={movement.notes || ''}>
-                              {movement.notes || '-'}
-                            </div>
-                          </td>
-                          <td className="p-4 text-center text-gray-700 dark:text-gray-300">{formatDate(movement.created_at)}</td>
-                        </motion.tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={Object.keys(movementColumnLabels).length} className="p-8 text-center">
-                          <div className="flex flex-col items-center gap-3 text-gray-500 dark:text-gray-400">
-                            <FiRefreshCw className="w-12 h-12 opacity-50" />
-                            <p className="font-semibold">لا توجد حركات مسجلة</p>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : showLogs ? (
-            /* Transfer Logs Table */
-            <div className="overflow-x-auto">
-              <div className="overflow-y-auto max-h-[600px]">
-                <table className="w-full">
-                  <thead className="sticky top-0 z-10">
-                    <tr className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-[0_4px_15px_rgba(0,0,0,0.2)]">
-                      {Object.keys(transferLogColumnLabels).map((header) => (
-                        <th
-                          key={header}
-                          className="p-4 text-center text-sm font-bold whitespace-nowrap border-b border-white/20"
-                        >
-                          {transferLogColumnLabels[header]}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {logsLoading ? (
-                      <tr>
-                        <td colSpan={Object.keys(transferLogColumnLabels).length} className="p-8 text-center">
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                            <p className="text-gray-500 dark:text-gray-400 font-semibold">جارٍ تحميل سجل التحويلات...</p>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : transferLogs.length > 0 ? (
-                      transferLogs.map((log, index) => (
-                        <motion.tr
-                          key={log.id}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: index * 0.05 }}
-                          className="hover:bg-gray-50/80 dark:hover:bg-gray-700/50 transition-colors duration-200 transform hover:scale-[1.005]"
-                        >
-                          <td className="p-4 text-center font-semibold text-gray-900 dark:text-white">{log.item_name}</td>
-                          <td className="p-4 text-center">
-                            <span className="bg-blue-100 text-blue-800 font-bold px-3 py-1 rounded-lg border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700 shadow-sm">
-                              {log.item_code}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className="bg-purple-100 text-purple-800 font-bold px-3 py-1 rounded-lg border border-purple-300 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700 shadow-sm">
-                              {log.color}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center font-bold text-lg text-amber-600 dark:text-amber-400">{log.transfer_quantity}</td>
-                          <td className="p-4 text-center text-gray-700 dark:text-gray-300">{formatDate(log.transfer_date)}</td>
-                          <td className="p-4 text-center">
-                            <span className="bg-green-100 text-green-800 px-3 py-1 rounded-lg border border-green-300 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700 shadow-sm">
-                              {log.username}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center text-gray-700 dark:text-gray-300">{log.supplier || '-'}</td>
-                          <td className="p-4 text-center max-w-[200px]">
-                            <div className="truncate" title={log.notes || ''}>
-                              {log.notes || '-'}
-                            </div>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className="bg-red-100 text-red-800 px-3 py-1 rounded-lg border border-red-300 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700 shadow-sm">
-                              {getLocationArabic(log.source_location)}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className="bg-green-100 text-green-800 px-3 py-1 rounded-lg border border-green-300 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700 shadow-sm">
-                              {getLocationArabic(log.destination_location)}
-                            </span>
-                          </td>
-                        </motion.tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={Object.keys(transferLogColumnLabels).length} className="p-8 text-center">
-                          <div className="flex flex-col items-center gap-3 text-gray-500 dark:text-gray-400">
-                            <FiArrowLeft className="w-12 h-12 opacity-50" />
-                            <p className="font-semibold">لا توجد تحويلات مسجلة</p>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : (
-            /* Inventory Table */
-            <div className="overflow-x-auto">
-              <div className="overflow-y-auto max-h-[600px]">
-                <table className="w-full">
-                  <thead className="sticky top-0 z-10">
-                    <tr className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_4px_15px_rgba(0,0,0,0.2)]">
-                      {[
-                        'item_name',
-                        'item_code',
-                        'color',
-                        'carton_quantity',
-                        'items_per_carton',
-                        'individual_items',
-                        'total_quantity',
-                        'remaining_quantity',
-                        'supplier',
-                        'location',
-                        'notes',
-                        'added_date',
-                        'actions',
-                      ].map((header) => (
-                        <th
-                          key={header}
-                          className={cn(
-                            'p-4 text-center text-sm font-bold whitespace-nowrap border-b border-white/20',
-                            header === 'item_name' ? 'min-w-[200px] pr-6' : '',
-                            header === 'item_code' ? 'min-w-[120px] pl-2' : '',
-                            header === 'actions' ? 'min-w-[180px]' : ''
-                          )}
-                        >
-                          {header === 'actions' ? 'الإجراءات' : columnLabels[header]}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {loading ? (
-                      <tr>
-                        <td colSpan={13} className="p-8 text-center">
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                            <p className="text-gray-500 dark:text-gray-400 font-semibold">جارٍ تحميل البيانات...</p>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : items.length > 0 ? (
-                      items.map((item, index) => (
-                        <motion.tr
-                          key={item.id}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: index * 0.05 }}
-                          className="hover:bg-gray-50/80 dark:hover:bg-gray-700/50 transition-colors duration-200 transform hover:scale-[1.005]"
-                        >
-                          <td className="p-4 text-right font-bold text-lg text-gray-900 dark:text-white min-w-[200px] pr-6">
-                            {item.item_name}
-                          </td>
-                          <td className="p-4 text-center min-w-[120px] pl-2">
-                            <span className="bg-blue-100 text-blue-800 font-bold text-lg px-3 py-1 rounded-lg border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700 shadow-sm">
-                              {item.item_code}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center min-w-[120px]">
-                            <span className="bg-purple-100 text-purple-800 font-bold text-lg px-3 py-1 rounded-lg border border-purple-300 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700 shadow-sm">
-                              {item.color || '-'}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center font-bold text-lg text-amber-600 dark:text-amber-400">{item.carton_quantity}</td>
-                          <td className="p-4 text-center font-bold text-lg text-gray-700 dark:text-gray-300">{item.items_per_carton}</td>
-                          <td className="p-4 text-center font-bold text-lg text-cyan-600 dark:text-cyan-400">{item.individual_items}</td>
-                          <td className="p-4 text-center font-bold text-lg text-blue-600 dark:text-blue-400">{item.total_quantity}</td>
-                          <td className="p-4 text-center min-w-[140px]">
-                            <div className="flex flex-col items-center gap-2">
-                              <span className={`font-bold text-lg px-3 py-1 rounded-lg border ${getStockLevelBg(item.remaining_quantity)} ${getStockLevelColor(item.remaining_quantity)} shadow-sm`}>
-                                {item.remaining_quantity.toLocaleString()}
-                              </span>
-                              <StockLevelIndicator remaining={item.remaining_quantity} total={item.total_quantity} />
-                            </div>
-                          </td>
-                          <td className="p-4 text-center text-gray-700 dark:text-gray-300">{item.supplier || '-'}</td>
-                          <td className="p-4 text-center">
-                            <span className="bg-gray-100 text-gray-800 px-3 py-1 rounded-lg border border-gray-300 dark:bg-gray-900/30 dark:text-gray-300 dark:border-gray-700 shadow-sm">
-                              {getLocationArabic(item.location || '')}
-                            </span>
-                          </td>
-                          <td className="p-4 text-center max-w-[200px]">
-                            <div className="truncate" title={item.notes || ''}>
-                              {item.notes || '-'}
-                            </div>
-                          </td>
-                          <td className="p-4 text-center text-gray-700 dark:text-gray-300">{formatDate(item.added_date)}</td>
-                          <td className="p-4 text-center min-w-[180px]">
-                            <div className="flex justify-center gap-2">
-                              <button
-                                onClick={() => handleEdit(item)}
-                                className="p-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg shadow-md hover:from-blue-600 hover:to-blue-700 transition-all duration-200 hover:shadow-lg transform hover:scale-110"
-                                title="تعديل"
-                              >
-                                <FiEdit className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDelete(item)}
-                                className="p-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg shadow-md hover:from-red-600 hover:to-red-700 transition-all duration-200 hover:shadow-lg transform hover:scale-110"
-                                title="حذف"
-                              >
-                                <FiTrash className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleTransfer(item)}
-                                className="p-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg shadow-md hover:from-green-600 hover:to-green-700 transition-all duration-200 hover:shadow-lg transform hover:scale-110"
-                                title="تحويل"
-                              >
-                                <FiArrowLeft className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleAdjustment(item)}
-                                className="p-2 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-lg shadow-md hover:from-orange-600 hover:to-orange-700 transition-all duration-200 hover:shadow-lg transform hover:scale-110"
-                                title="تعديل المخزون"
-                              >
-                                <FiRefreshCw className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </motion.tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={13} className="p-8 text-center">
-                          <div className="flex flex-col items-center gap-3 text-gray-500 dark:text-gray-400">
-                            <FiPackage className="w-12 h-12 opacity-50" />
-                            <p className="font-semibold">لا توجد بيانات</p>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Footer */}
-          <div className="p-4 bg-gray-50/80 dark:bg-gray-700/80 border-t border-gray-200/50 dark:border-gray-600/50 shadow-[0_-4px_15px_rgba(0,0,0,0.1)] backdrop-blur-md">
-            <div className="flex justify-between items-center">
-              <div className="text-sm font-semibold text-gray-600 dark:text-gray-400">
-                تاريخ اليوم: {currentDate}
-              </div>
-              <div className="text-sm font-bold text-gray-900 dark:text-white">
-                عدد النتائج: {showLogs ? transferLogs.length : showMovements ? stockMovements.length : resultCount} {showLogs ? 'سجل' : showMovements ? 'حركة' : 'صنف'}
-              </div>
-            </div>
-          </div>
-        </motion.div>
-      </div>
+      {/* Render tabs */}
+      {activeTab === "dashboard" ? (
+        <DashboardContent />
+      ) : (
+        <NavigationContent />
+      )}
 
       {/* Edit Modal */}
       <Dialog.Root open={editModalOpen} onOpenChange={setEditModalOpen}>
@@ -1572,55 +1572,26 @@ export default function ViewStockPage() {
         </Dialog.Portal>
       </Dialog.Root>
 
-      {/* Delete Modal - Keep the same structure as before but update the text */}
+      {/* Delete Modal */}
       <Dialog.Root open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/50 backdrop-blur-sm" />
           <Dialog.Content className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md dir-rtl shadow-[0_10px_40px_rgba(0,0,0,0.3)] border border-gray-200/50 dark:border-gray-600/50 backdrop-blur-md">
-            {/* ... Delete modal content remains the same but with updated field names ... */}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-
-      {/* Transfer Modal - Keep the same structure but update the form fields */}
-      <Dialog.Root open={transferModalOpen} onOpenChange={setTransferModalOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/50 backdrop-blur-sm" />
-          <Dialog.Content className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md dir-rtl shadow-[0_10px_40px_rgba(0,0,0,0.3)] border border-gray-200/50 dark:border-gray-600/50 backdrop-blur-md">
-            {/* ... Transfer modal content remains the same but with updated field names ... */}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-
-      {/* Adjustment Modal */}
-      <Dialog.Root open={adjustmentModalOpen} onOpenChange={setAdjustmentModalOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/50 backdrop-blur-sm" />
-          <Dialog.Content className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md dir-rtl shadow-[0_10px_40px_rgba(0,0,0,0.3)] border border-gray-200/50 dark:border-gray-600/50 backdrop-blur-md">
-            <div className="bg-gradient-to-r from-orange-500 to-orange-600 text-white p-4 rounded-t-xl -mx-6 -mt-6 mb-6 text-center shadow-[0_4px_15px_rgba(0,0,0,0.2)]">
+            <div className="bg-gradient-to-r from-red-500 to-red-600 text-white p-4 rounded-t-xl -mx-6 -mt-6 mb-6 text-center shadow-[0_4px_15px_rgba(0,0,0,0.2)]">
               <div className="flex items-center justify-center gap-3">
-                <FiRefreshCw className="w-6 h-6" />
+                <FiTrash className="w-6 h-6" />
                 <Dialog.Title className="text-xl font-bold">
-                  تعديل المخزون
+                  تأكيد الحذف
                 </Dialog.Title>
               </div>
             </div>
 
             <div className="mb-6">
-              <div className="bg-gradient-to-r from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-800/20 p-4 rounded-xl mb-4 shadow-md border border-blue-200/50 dark:border-blue-700/50 backdrop-blur-sm">
-                <p className="text-lg font-semibold text-gray-900 dark:text-white mb-2">تفاصيل الصنف</p>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div className="text-right font-semibold text-gray-600 dark:text-gray-300">الصنف:</div>
-                  <div className="text-left font-bold text-gray-900 dark:text-white">{selectedItem?.item_name}</div>
-                  <div className="text-right font-semibold text-gray-600 dark:text-gray-300">الكود:</div>
-                  <div className="text-left font-bold text-gray-900 dark:text-white">{selectedItem?.item_code}</div>
-                  <div className="text-right font-semibold text-gray-600 dark:text-gray-300">الكمية الحالية:</div>
-                  <div className="text-left">
-                    <span className={`font-bold ${getStockLevelColor(selectedItem?.remaining_quantity || 0)}`}>
-                      {selectedItem?.remaining_quantity.toLocaleString()}
-                    </span>
-                  </div>
-                </div>
+              <div className="bg-gradient-to-r from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/20 p-4 rounded-xl mb-4 shadow-md border border-red-200/50 dark:border-red-700/50 backdrop-blur-sm">
+                <p className="text-lg font-semibold text-gray-900 dark:text-white mb-2">تحذير</p>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  هل أنت متأكد من حذف الصنف "{selectedItem?.item_name}"؟ هذا الإجراء لا يمكن التراجع عنه.
+                </p>
               </div>
 
               {error && (
@@ -1628,46 +1599,6 @@ export default function ViewStockPage() {
                   {error}
                 </div>
               )}
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-900 dark:text-white mb-2">
-                    نوع التعديل
-                  </label>
-                  <select
-                    value={adjustmentForm.operation}
-                    onChange={(e) => setAdjustmentForm({ ...adjustmentForm, operation: e.target.value as 'ADD' | 'DEDUCT' })}
-                    className="w-full p-3 bg-white/90 dark:bg-gray-700/90 rounded-xl border-2 border-blue-200 dark:border-blue-600 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 transition-all duration-300 text-right shadow-[0_4px_15px_rgba(0,0,0,0.1)] backdrop-blur-md"
-                  >
-                    <option value="ADD">إضافة</option>
-                    <option value="DEDUCT">خصم</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-900 dark:text-white mb-2">
-                    الكمية
-                  </label>
-                  <Input
-                    type="number"
-                    value={adjustmentForm.quantity}
-                    onChange={(e) => setAdjustmentForm({ ...adjustmentForm, quantity: e.target.value })}
-                    placeholder="أدخل الكمية"
-                    className="w-full p-3 bg-white/90 dark:bg-gray-700/90 rounded-xl border-2 border-blue-200 dark:border-blue-600 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 transition-all duration-300 text-right shadow-[0_4px_15px_rgba(0,0,0,0.1)] backdrop-blur-md"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-900 dark:text-white mb-2">
-                    ملاحظات
-                  </label>
-                  <textarea
-                    value={adjustmentForm.notes}
-                    onChange={(e) => setAdjustmentForm({ ...adjustmentForm, notes: e.target.value })}
-                    placeholder="أدخل ملاحظات إضافية"
-                    className="w-full p-3 bg-white/90 dark:bg-gray-700/90 rounded-xl border-2 border-blue-200 dark:border-blue-600 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 transition-all duration-300 text-right shadow-[0_4px_15px_rgba(0,0,0,0.1)] backdrop-blur-md"
-                    rows={3}
-                  />
-                </div>
-              </div>
             </div>
 
             <div className="flex justify-end gap-3">
@@ -1680,19 +1611,19 @@ export default function ViewStockPage() {
                 </button>
               </Dialog.Close>
               <button
-                onClick={submitAdjustment}
-                className="px-6 py-3 bg-gradient-to-r from-orange-600 to-orange-700 text-white rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] hover:from-orange-700 hover:to-orange-800 transition-all duration-300 font-semibold flex items-center gap-2 transform hover:scale-105"
+                onClick={submitDelete}
+                className="px-6 py-3 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-xl shadow-[0_4px_15px_rgba(0,0,0,0.2)] hover:from-red-700 hover:to-red-800 transition-all duration-300 font-semibold flex items-center gap-2 transform hover:scale-105"
                 disabled={actionLoading}
               >
                 {actionLoading ? (
                   <>
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    جارٍ التعديل...
+                    جارٍ الحذف...
                   </>
                 ) : (
                   <>
-                    <FiRefreshCw className="w-4 h-4" />
-                    تأكيد التعديل
+                    <FiTrash className="w-4 h-4" />
+                    تأكيد الحذف
                   </>
                 )}
               </button>

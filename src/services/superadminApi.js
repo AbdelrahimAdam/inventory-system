@@ -1,23 +1,13 @@
 // src/services/superadminApi.js
 import axios from 'axios';
 
-/**
- * PRODUCTION-READY Super Admin API Service
- * FULLY COMPATIBLE with inventory_system database schema
- * Enhanced with comprehensive error handling and Arabic support
- * Includes backward compatibility for legacy exports
- */
+/* ==========================================================================
+   CONFIGURATION & CONSTANTS
+   ========================================================================== */
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://192.168.1.212:3001/api/v1';
+const API_TIMEOUT = 30_000;
 
-// =============================================================================
-// CONFIGURATION & CONSTANTS
-// =============================================================================
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api/v1';
-const API_TIMEOUT = 30000;
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000;
-
-// Arabic error messages for user-facing alerts
+/* Arabic error messages ---------------------------------------------------- */
 const ARABIC_ERROR_MESSAGES = {
   NETWORK_ERROR: 'تعذر الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت.',
   SERVER_ERROR: 'حدث خطأ في الخادم. يرجى المحاولة مرة أخرى.',
@@ -25,227 +15,76 @@ const ARABIC_ERROR_MESSAGES = {
   FORBIDDEN: 'غير مصرح لك بتنفيذ هذا الإجراء.',
   NOT_FOUND: 'لم يتم العثور على المورد المطلوب.',
   VALIDATION_ERROR: 'بيانات غير صالحة. يرجى التحقق من المدخلات.',
-  UNKNOWN_ERROR: 'حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.'
+  UNKNOWN_ERROR: 'حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.',
 };
 
-// =============================================================================
-// TOKEN MANAGEMENT SERVICE (SCHEMA-COMPATIBLE)
-// =============================================================================
+/* ==========================================================================
+   SUPER-ADMIN BYPASS CONFIG (dev-only by default)
+   ========================================================================== */
+const IS_DEVELOPMENT = import.meta.env.DEV; // Vite sets this automatically
+const SUPER_ADMIN_BYPASS_CONFIG = {
+  // Turn on ONLY in local dev – NEVER in prod
+  ENABLED: IS_DEVELOPMENT,
+  METHODS: {
+    HEADER: 'X-Super-Admin',
+    QUERY: 'super_admin',
+  },
+  VALUES: {
+    HEADER: 'true',
+    QUERY: 'true',
+  },
+};
 
-const TokenManager = {
-  /**
-   * Get clean authentication token - compatible with validate_session(uuid) function
-   */
-  getCleanToken: () => {
+/* ==========================================================================
+   TOKEN MANAGER (UUID only)
+   ========================================================================== */
+export const TokenManager = {
+  /** Get the stored session token (UUID) */
+  getToken: () => {
     try {
-      const token = localStorage.getItem('session_token') || 
-                   localStorage.getItem('token') || 
-                   localStorage.getItem('authToken') || 
-                   sessionStorage.getItem('session_token') ||
-                   sessionStorage.getItem('token') ||
-                   sessionStorage.getItem('authToken');
-
-      if (!token) {
-        console.warn('⚠️ No authentication token found');
+      const raw = localStorage.getItem('session_token') || sessionStorage.getItem('session_token');
+      if (!raw) {
+        console.warn('No session_token in storage');
         return null;
       }
-
-      // Remove "Bearer " prefix if present - backend expects raw UUID
-      const cleanToken = token.replace(/^Bearer\s+/i, '');
-      
-      // Validate UUID format (matches session_token in users table)
-      if (!TokenManager.isValidUUID(cleanToken)) {
-        console.error('❌ Invalid token format - expected UUID:', cleanToken);
-        TokenManager.clearTokens();
+      const clean = raw.replace(/^Bearer\s+/i, '').trim();
+      if (!TokenManager.isValidUUID(clean)) {
+        console.error('Invalid UUID token:', clean);
         return null;
       }
-
-      return cleanToken;
-    } catch (error) {
-      console.error('❌ Token retrieval error:', error);
+      console.log('Token retrieved:', `${clean.substring(0, 8)}...`);
+      return `Bearer ${clean}`;
+    } catch (e) {
+      console.error('TokenManager error:', e);
       return null;
     }
   },
 
-  /**
-   * Validate UUID format (matches PostgreSQL uuid type)
-   */
-  isValidUUID: (token) => {
-    if (!token || typeof token !== 'string') return false;
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    return uuidRegex.test(token);
-  },
+  /** UUID v4 regex */
+  isValidUUID: (s) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s),
 
-  /**
-   * Clear all authentication tokens
-   */
+  /** Clear everything */
   clearTokens: () => {
-    try {
-      const items = ['session_token', 'token', 'authToken', 'refresh_token', 'user_data'];
-      items.forEach(item => {
-        localStorage.removeItem(item);
-        sessionStorage.removeItem(item);
-      });
-      console.log('🔐 All authentication tokens cleared');
-    } catch (error) {
-      console.error('❌ Token clearance error:', error);
-    }
+    ['session_token', 'token', 'authToken', 'currentUser', 'user_data'].forEach((k) => {
+      localStorage.removeItem(k);
+      sessionStorage.removeItem(k);
+    });
+    console.log('All tokens cleared');
   },
 
-  /**
-   * Check if user should be redirected to login
-   */
-  shouldRedirectToLogin: () => {
-    return !window.location.pathname.includes('/login') && 
-           !window.location.pathname.includes('/register');
-  },
-
-  /**
-   * Redirect to login with proper error message
-   */
+  /** Manual redirect – call only when you decide */
   redirectToLogin: (reason = 'session_expired') => {
     TokenManager.clearTokens();
-    const loginUrl = `/login?reason=${reason}&redirect=${encodeURIComponent(window.location.pathname)}`;
-    window.location.href = loginUrl;
-  }
+    const url = `/login?reason=${reason}&redirect=${encodeURIComponent(window.location.pathname)}`;
+    console.log('Redirect →', url);
+    window.location.href = url;
+  },
 };
 
-// =============================================================================
-// REQUEST INTERCEPTOR - ENHANCED SUPER_ADMIN ACCESS
-// =============================================================================
-
-const requestInterceptor = (config) => {
-  try {
-    const token = TokenManager.getCleanToken();
-    
-    if (token && TokenManager.isValidUUID(token)) {
-      config.headers.Authorization = `Bearer ${token}`;
-      config.headers['X-Session-Token'] = token;
-      config.headers['X-SuperAdmin-Access'] = 'true';
-      config.headers['X-Client-Type'] = 'superadmin-dashboard';
-      config.headers['X-Timestamp'] = new Date().toISOString();
-      config.headers['X-Force-SuperAdmin'] = 'true';
-      config.headers['X-Bypass-Role-Check'] = 'true';
-    } else {
-      console.warn('⚠️ No valid UUID token available for Super Admin request');
-      TokenManager.clearTokens();
-      config.headers['X-Client-Type'] = 'superadmin-dashboard';
-      config.headers['X-Force-SuperAdmin'] = 'true';
-    }
-
-    config.metadata = { 
-      startTime: Date.now(),
-      url: config.url,
-      method: config.method
-    };
-    
-    return config;
-  } catch (error) {
-    console.error('❌ Request interceptor error:', error);
-    return config;
-  }
-};
-
-// =============================================================================
-// RESPONSE INTERCEPTOR - ENHANCED 403 HANDLING
-// =============================================================================
-
-const responseInterceptor = (response) => {
-  const duration = Date.now() - (response.config.metadata?.startTime || Date.now());
-  console.log(`✅ ${response.config.method?.toUpperCase()} ${response.config.url} - ${duration}ms`);
-  
-  return response;
-};
-
-// =============================================================================
-// ERROR HANDLER - SUPER_ADMIN SPECIFIC ERROR MANAGEMENT
-// =============================================================================
-
-const errorHandler = async (error) => {
-  const originalRequest = error.config;
-  
-  console.error('❌ SuperAdmin API Error:', {
-    url: error.config?.url,
-    method: error.config?.method,
-    status: error.response?.status,
-    message: error.message,
-    data: error.response?.data,
-    retryCount: originalRequest?._retryCount || 0
-  });
-
-  if (!error.response && originalRequest && (originalRequest._retryCount || 0) < MAX_RETRIES) {
-    originalRequest._retryCount = (originalRequest._retryCount || 0) + 1;
-    
-    console.log(`🔄 Retrying request (${originalRequest._retryCount}/${MAX_RETRIES})...`);
-    
-    const delay = RETRY_DELAY * Math.pow(2, originalRequest._retryCount - 1);
-    await new Promise(resolve => setTimeout(resolve, delay));
-    
-    return api(originalRequest);
-  }
-
-  if (error.response) {
-    const { status, data } = error.response;
-    
-    switch (status) {
-      case 401:
-        console.error('🔐 Authentication failed - clearing tokens');
-        TokenManager.clearTokens();
-        if (TokenManager.shouldRedirectToLogin()) {
-          TokenManager.redirectToLogin('session_expired');
-        }
-        break;
-        
-      case 403:
-        console.error('🚫 SUPER_ADMIN ACCESS FORBIDDEN - This should not happen!');
-        console.error('🔧 Debug info:', {
-          token: TokenManager.getCleanToken() ? 'Present' : 'Missing',
-          tokenValid: TokenManager.isValidUUID(TokenManager.getCleanToken()),
-          endpoint: error.config.url,
-          method: error.config.method
-        });
-        
-        if (data?.message?.includes('غير مصرح') || data?.message?.includes('Insufficient role')) {
-          if (originalRequest && !originalRequest._superAdminBypassAttempted) {
-            console.log('🔄 Attempting SUPER_ADMIN bypass for 403...');
-            originalRequest._superAdminBypassAttempted = true;
-            originalRequest.headers['X-SuperAdmin-Force-Bypass'] = 'true';
-            originalRequest.headers['X-Bypass-All-Checks'] = 'true';
-            return api(originalRequest);
-          }
-          throw new Error('خطأ في صلاحيات SUPER_ADMIN: يرجى التحقق من إعدادات الخادم');
-        }
-        break;
-        
-      case 404:
-        console.error('🔍 Endpoint not found:', error.config.url);
-        throw new Error(ARABIC_ERROR_MESSAGES.NOT_FOUND);
-        
-      case 500:
-        console.error('🔧 Server error - please try again later');
-        if (!error.config.url.includes('/security/logs')) {
-          throw new Error(ARABIC_ERROR_MESSAGES.SERVER_ERROR);
-        }
-        break;
-        
-      default:
-        console.error(`📡 HTTP ${status}: ${data?.message || 'Unknown error'}`);
-        throw new Error(data?.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR);
-    }
-  } else if (error.request) {
-    console.error('🌐 Network error - please check your internet connection');
-    if (!error.config.url.includes('/security/logs')) {
-      throw new Error(ARABIC_ERROR_MESSAGES.NETWORK_ERROR);
-    }
-  }
-
-  return Promise.reject(error);
-};
-
-// =============================================================================
-// AXIOS INSTANCE CONFIGURATION - ENHANCED FOR SUPER_ADMIN
-// =============================================================================
-
+/* ==========================================================================
+   AXIOS INSTANCE (superadmin base + bypass)
+   ========================================================================== */
 const api = axios.create({
   baseURL: `${API_BASE_URL}/superadmin`,
   timeout: API_TIMEOUT,
@@ -253,531 +92,759 @@ const api = axios.create({
     'Content-Type': 'application/json',
     'X-Client-Type': 'superadmin-dashboard',
     'X-Client-Version': '1.0.0',
-    'X-SuperAdmin-Override': 'true',
-    'X-Bypass-Role-Validation': 'true'
   },
-  maxContentLength: 50 * 1024 * 1024,
-  maxRedirects: 5,
-  validateStatus: (status) => status < 500
 });
 
-api.interceptors.request.use(requestInterceptor);
-api.interceptors.response.use(responseInterceptor, errorHandler);
+/* ---- Request interceptor ------------------------------------------------ */
+api.interceptors.request.use(
+  (cfg) => {
+    const token = TokenManager.getToken();
+    
+    // ---- Bypass header (dev only) ---------------------------------------
+    if (SUPER_ADMIN_BYPASS_CONFIG.ENABLED) {
+      cfg.headers[SUPER_ADMIN_BYPASS_CONFIG.METHODS.HEADER] = SUPER_ADMIN_BYPASS_CONFIG.VALUES.HEADER;
+      console.log('BYPASS HEADER ADDED →', cfg.url);
+    }
+    
+    // ---- Auth token -----------------------------------------------------
+    if (token) {
+      cfg.headers.Authorization = token;
+      cfg.headers['X-Session-Token'] = token.replace(/^Bearer\s+/i, '');
+      console.log('HEADERS →', {
+        url: cfg.url,
+        method: cfg.method,
+        hasToken: true,
+        hasBypass: SUPER_ADMIN_BYPASS_CONFIG.ENABLED,
+        authPreview: token.substring(0, 20) + '...',
+      });
+    } else {
+      console.warn('No token for request →', cfg.url);
+    }
+    
+    return cfg;
+  },
+  (err) => Promise.reject(err)
+);
 
-// =============================================================================
-// SUPER ADMIN API METHODS - WITH FORCED SUPER_ADMIN ACCESS
-// =============================================================================
+/* ---- Response interceptor (no auto-redirect) --------------------------- */
+api.interceptors.response.use(
+  (res) => {
+    console.log(`${res.config.method?.toUpperCase()} ${res.config.url} → ${res.status}`);
+    return res;
+  },
+  (err) => {
+    console.error('API ERROR →', {
+      url: err.config?.url,
+      method: err.config?.method,
+      status: err.response?.status,
+      data: err.response?.data,
+    });
+    return Promise.reject(err);
+  }
+);
+
+/* ==========================================================================
+   CORE API METHODS (all include bypass query param when enabled)
+   ========================================================================== */
+const withBypassQuery = (params = {}) => ({
+  ...params,
+  ...(SUPER_ADMIN_BYPASS_CONFIG.ENABLED && {
+    [SUPER_ADMIN_BYPASS_CONFIG.METHODS.QUERY]: SUPER_ADMIN_BYPASS_CONFIG.VALUES.QUERY,
+  }),
+});
 
 export const superadminApi = {
-  getDashboardStats: () => api.get('/dashboard/stats'),
-  getSystemStatus: () => api.get('/system/status'),
-  getSystemMetrics: () => api.get('/system/metrics'),
-  getSystemConfig: () => api.get('/system/config'),
-  updateSystemConfig: (key, data) => api.put(`/system/config/${key}`, data),
-  toggleSystem: (data) => api.post('/system/toggle', data),
-  toggleMaintenance: (data) => api.post('/system/maintenance', data),
-  getUsers: (params = {}) => {
-    const { page = 1, limit = 10, search = '', role = '', status = '', is_locked = '' } = params;
-    return api.get('/users', {
-      params: { page, limit, search, role, status, is_locked },
-      headers: { 'X-Force-User-Access': 'true', 'X-Bypass-User-Check': 'true' }
-    });
-  },
-  createUser: (data) => api.post('/users', data, { headers: { 'X-Force-User-Create': 'true' } }),
-  getUserDetails: (id) => {
-    if (id === 'recent') {
-      return api.get('/users/recent', { headers: { 'X-Force-User-Access': 'true' } });
-    }
-    return api.get(`/users/${id}`, { headers: { 'X-Force-User-Access': 'true' } });
-  },
-  updateUser: (id, data) => api.put(`/users/${id}`, data, { headers: { 'X-Force-User-Update': 'true' } }),
-  updateUserRole: (id, data) => api.put(`/users/${id}/role`, data, { headers: { 'X-Force-Role-Update': 'true' } }),
-  deactivateUser: (id) => api.patch(`/users/${id}/deactivate`, {}, { headers: { 'X-Force-User-Deactivate': 'true' } }),
-  activateUser: (id) => api.patch(`/users/${id}/activate`, {}, { headers: { 'X-Force-User-Activate': 'true' } }),
-  resetUserPassword: (id, data) => api.patch(`/users/${id}/password`, data, { headers: { 'X-Force-Password-Reset': 'true' } }),
-  blockUser: (id) => api.patch(`/users/${id}/lock`, {}, { headers: { 'X-Force-User-Block': 'true' } }),
-  unblockUser: (id) => api.patch(`/users/${id}/unlock`, {}, { headers: { 'X-Force-User-Unblock': 'true' } }),
-  verifyUser: (id) => api.patch(`/users/${id}/verify`, {}, { headers: { 'X-Force-User-Verify': 'true' } }),
-  getRoles: () => api.get('/roles', { headers: { 'X-Force-Role-Access': 'true' } }),
-  createRole: (data) => api.post('/roles', data, { headers: { 'X-Force-Role-Create': 'true' } }),
-  getRoleDetails: (id) => api.get(`/roles/${id}`, { headers: { 'X-Force-Role-Access': 'true' } }),
-  updateRole: (id, data) => api.put(`/roles/${id}`, data, { headers: { 'X-Force-Role-Update': 'true' } }),
-  deleteRole: (id) => api.delete(`/roles/${id}`, { headers: { 'X-Force-Role-Delete': 'true' } }),
-  getFeatures: () => api.get('/features', { headers: { 'X-Force-Feature-Access': 'true' } }),
-  updateFeature: (id, data) => api.put(`/features/${id}`, data, { headers: { 'X-Force-Feature-Update': 'true' } }),
-  getRolePermissions: (id) => api.get(`/roles/${id}/permissions`, { headers: { 'X-Force-Permission-Access': 'true' } }),
-  assignRolePermissions: (id, data) => api.put(`/roles/${id}/permissions`, data, { headers: { 'X-Force-Permission-Update': 'true' } }),
-  getUserPermissions: (id, featureCode) => 
-    api.get(`/users/${id}/permissions${featureCode ? `?featureCode=${featureCode}` : ''}`, { headers: { 'X-Force-Permission-Access': 'true' } }),
-  getAccessibleFeatures: (userId) => api.get(`/features/accessible?userId=${userId}`, { headers: { 'X-Force-Feature-Access': 'true' } }),
-  assignUserPermissions: (id, data) => api.post(`/users/${id}/permissions`, data, { headers: { 'X-Force-Permission-Assign': 'true' } }),
-  removeUserPermissions: (id, featureCode, data) => 
-    api.delete(`/users/${id}/permissions/${featureCode}`, { data, headers: { 'X-Force-Permission-Remove': 'true' } }),
-  getSecurityLogs: (params = {}) => {
-    const { page = 1, limit = 10, severity = '', event_type = '' } = params;
-    return api.get('/security/logs', { params: { page, limit, severity, event_type }, headers: { 'X-Force-Log-Access': 'true' } });
-  },
-  getSecurityEvents: (params = {}) => {
-    const { page = 1, limit = 10, severity = '' } = params;
-    return api.get('/security-events', { params: { page, limit, severity }, headers: { 'X-Force-Event-Access': 'true' } });
-  },
-  getAdminLogs: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/admin-logs', { params: { page, limit }, headers: { 'X-Force-AdminLog-Access': 'true' } });
-  },
-  getLoginAttempts: (params = {}) => {
-    const { page = 1, limit = 10, success = '' } = params;
-    return api.get('/login-attempts', { params: { page, limit, success }, headers: { 'X-Force-LoginAttempt-Access': 'true' } });
-  },
-  getInventoryItems: (params = {}) => {
-    const { page = 1, limit = 10, search = '', category = '' } = params;
-    return api.get('/inventory/items', { params: { page, limit, search, category }, headers: { 'X-Force-Inventory-Access': 'true' } });
-  },
-  getAccessoryItems: (params = {}) => {
-    const { page = 1, limit = 10, search = '' } = params;
-    return api.get('/accessory/items', { params: { page, limit, search }, headers: { 'X-Force-Accessory-Access': 'true' } });
-  },
-  getMonofiaInventory: (params = {}) => {
-    const { page = 1, limit = 10, search = '' } = params;
-    return api.get('/monofia/inventory', { params: { page, limit, search }, headers: { 'X-Force-Monofia-Access': 'true' } });
-  },
-  getMatbaaInventory: (params = {}) => {
-    const { page = 1, limit = 10, search = '' } = params;
-    return api.get('/matbaa/inventory', { params: { page, limit, search }, headers: { 'X-Force-Matbaa-Access': 'true' } });
-  },
-  getInvoices: (params = {}) => {
-    const { page = 1, limit = 10, status = '', type = '' } = params;
-    return api.get('/invoices', { params: { page, limit, status, type }, headers: { 'X-Force-Invoice-Access': 'true' } });
-  },
-  getInvoiceDetails: (id) => api.get(`/invoices/${id}`, { headers: { 'X-Force-Invoice-Access': 'true' } }),
-  getInvoiceItems: (invoiceId) => api.get(`/invoices/${invoiceId}/items`, { headers: { 'X-Force-InvoiceItem-Access': 'true' } }),
-  getStockMovements: (params = {}) => {
-    const { page = 1, limit = 10, type = '' } = params;
-    return api.get('/stock/movements', { params: { page, limit, type }, headers: { 'X-Force-Stock-Access': 'true' } });
-  },
-  getLocationTransfers: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/location/transfers', { params: { page, limit }, headers: { 'X-Force-Transfer-Access': 'true' } });
-  },
-  getFactoryMovements: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/factory/movements', { params: { page, limit }, headers: { 'X-Force-Factory-Access': 'true' } });
-  },
-  getFactoryReturns: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/factory/returns', { params: { page, limit }, headers: { 'X-Force-Factory-Access': 'true' } });
-  },
-  getAccessoryDispatches: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/accessory/dispatches', { params: { page, limit }, headers: { 'X-Force-Dispatch-Access': 'true' } });
-  },
-  getAccessoryReturns: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/accessory/returns', { params: { page, limit }, headers: { 'X-Force-Return-Access': 'true' } });
-  },
-  getDatabaseStats: () => api.get('/database/stats', { headers: { 'X-Force-Database-Access': 'true' } }),
-  createBackup: () => api.post('/database/backup', {}, { headers: { 'X-Force-Backup-Create': 'true' } }),
-  optimizeDatabase: () => api.post('/database/optimize', {}, { headers: { 'X-Force-Database-Optimize': 'true' } }),
-  clearCache: () => api.post('/system/clear-cache', {}, { headers: { 'X-Force-Cache-Clear': 'true' } }),
-  getSystemMonitoring: () => api.get('/system/monitoring', { headers: { 'X-Force-Monitoring-Access': 'true' } }),
-  healthCheck: () => api.get('/health', { headers: { 'X-Force-Health-Check': 'true' } }),
-  systemWideSearch: (query) => api.get('/search', { params: { query }, headers: { 'X-Force-Search-Access': 'true' } }),
-  getDeletionLogs: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/deletion-logs', { params: { page, limit }, headers: { 'X-Force-DeletionLog-Access': 'true' } });
-  },
-  getTokenBlacklist: (params = {}) => {
-    const { page = 1, limit = 10 } = params;
-    return api.get('/token/blacklist', { params: { page, limit }, headers: { 'X-Force-Token-Access': 'true' } });
-  },
-  getPasswordHistory: (userId) => api.get(`/users/${userId}/password-history`, { headers: { 'X-Force-PasswordHistory-Access': 'true' } }),
-  forceSuperAdminAccess: () => api.get('/superadmin/force-access', {
-    headers: { 'X-Force-SuperAdmin-All': 'true', 'X-Bypass-All-Checks': 'true' }
-  }),
-  validateSuperAdminRole: () => api.get('/superadmin/validate-role', { headers: { 'X-Force-Role-Validation': 'true' } })
-};
-
-// =============================================================================
-// ENHANCED API SERVICE WITH SUPER_ADMIN BYPASS CAPABILITY
-// =============================================================================
-
-export const enhancedSuperadminApi = {
-  validateSuperAdminAccess: async () => {
+  /* ----------------------- USERS --------------------------------------- */
+  getUsers: async (params = {}) => {
     try {
-      const response = await superadminApi.forceSuperAdminAccess();
-      return {
-        success: true,
-        access: true,
-        message: 'SUPER_ADMIN access validated',
-        data: response.data
-      };
-    } catch (error) {
-      console.error('SUPER_ADMIN access validation failed:', error);
-      return {
-        success: false,
-        access: false,
-        error: error.message
-      };
-    }
-  },
-  safeGetDashboardStats: async () => {
-    try {
-      const response = await superadminApi.getDashboardStats();
-      return {
-        success: true,
-        data: response.data,
-        stats: response.data?.stats || response.data
-      };
-    } catch (error) {
-      console.error('Failed to fetch dashboard stats:', error);
-      return {
-        success: false,
-        error: error.message,
-        data: null
-      };
-    }
-  },
-  safeGetRoles: async () => {
-    try {
-      const response = await superadminApi.getRoles();
-      return {
-        success: true,
-        roles: response.data?.roles || response.data || [],
-        data: response.data
-      };
-    } catch (error) {
-      console.error('Failed to fetch roles:', error);
-      return {
-        success: false,
-        error: error.message,
-        roles: []
-      };
-    }
-  },
-  safeGetUsers: async (params = {}) => {
-    try {
-      console.log('🔄 [SUPER_ADMIN] Attempting to fetch users with params:', params);
-      const response = await superadminApi.getUsers(params);
-      console.log('✅ [SUPER_ADMIN] Users fetch successful:', {
-        status: response.status,
-        data: response.data,
-        usersCount: response.data?.users?.length || 0
+      const response = await api.get('/users', {
+        params: withBypassQuery(params),
       });
       return {
         success: true,
-        users: response.data?.users || response.data?.data?.users || response.data || [],
-        total: response.data?.total || response.data?.pagination?.total || response.data?.users?.length || 0,
+        users: response.data?.users || [],
+        total: response.data?.pagination?.total ?? 0,
         pagination: response.data?.pagination || {
-          page: params.page || 1,
-          limit: params.limit || 10,
-          total: response.data?.users?.length || 0,
-          totalPages: Math.ceil((response.data?.users?.length || 0) / (params.limit || 10))
+          total: 0,
+          currentPage: 1,
+          totalPages: 1,
+          hasNext: false,
+          hasPrev: false
         },
-        data: response.data
       };
-    } catch (error) {
-      console.error('❌ [SUPER_ADMIN] Failed to fetch users:', {
-        error: error.message,
-        status: error.response?.status,
-        data: error.response?.data,
-        params
-      });
-      if (error.response?.status === 403) {
-        console.log('🔄 [SUPER_ADMIN] Attempting bypass for 403 error...');
-        try {
-          const bypassResponse = await api.get('/users', {
-            params,
-            headers: {
-              'X-SuperAdmin-Force-Bypass': 'true',
-              'X-Bypass-All-Checks': 'true',
-              'X-Force-SuperAdmin-Override': 'true'
-            }
-          });
-          return {
-            success: true,
-            users: bypassResponse.data?.users || bypassResponse.data || [],
-            total: bypassResponse.data?.users?.length || 0,
-            pagination: {
-              page: params.page || 1,
-              limit: params.limit || 10,
-              total: bypassResponse.data?.users?.length || 0,
-              totalPages: Math.ceil((bypassResponse.data?.users?.length || 0) / (params.limit || 10))
-            },
-            data: bypassResponse.data,
-            bypassUsed: true
-          };
-        } catch (bypassError) {
-          console.error('❌ [SUPER_ADMIN] Bypass also failed:', bypassError);
-        }
-      }
+    } catch (e) {
+      console.error('Get users error:', e.response?.data || e.message);
       return {
         success: false,
-        error: error.message,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
         users: [],
         total: 0,
-        pagination: {
-          page: params.page || 1,
-          limit: params.limit || 10,
-          total: 0,
-          totalPages: 0
-        }
+        pagination: {},
       };
     }
   },
-  safeGetUserDetails: async (userId) => {
+
+  createUser: async (userData) => {
     try {
-      const response = await superadminApi.getUserDetails(userId);
-      return {
-        success: true,
-        user: response.data,
-        data: response.data
-      };
-    } catch (error) {
-      console.error('Failed to fetch user details:', error);
-      return {
-        success: false,
-        error: error.message,
-        user: null
-      };
-    }
-  },
-  safeCreateUser: async (userData) => {
-    try {
-      console.log('🔄 [SUPER_ADMIN] Creating new user:', userData);
       if (!userData.full_name || !userData.email || !userData.password || !userData.role_id) {
-        return {
-          success: false,
-          error: 'جميع الحقول الإلزامية مطلوبة: الاسم الكامل، البريد الإلكتروني، كلمة المرور، الدور',
-          user: null
-        };
+        throw new Error('جميع الحقول مطلوبة: الاسم الكامل، البريد، كلمة المرور، الدور');
       }
-      const formattedData = {
+
+      // Enhanced validation to match backend
+      if (!/^\S+@\S+\.\S+$/.test(userData.email)) {
+        throw new Error('البريد الإلكتروني غير صالح');
+      }
+
+      if (userData.password.length < 8) {
+        throw new Error('كلمة المرور يجب أن تكون 8 أحرف على الأقل');
+      }
+
+      if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(userData.password)) {
+        throw new Error('كلمة المرور يجب أن تحتوي على حرف كبير، حرف صغير، ورقم');
+      }
+
+      const payload = {
         full_name: userData.full_name.trim(),
         email: userData.email.trim().toLowerCase(),
-        username: userData.username?.trim() || userData.email.trim().toLowerCase().split('@')[0],
         password: userData.password,
-        role_id: userData.role_id,
-        phone_number: userData.phone_number?.trim() || null,
-        department: userData.department?.trim() || null,
-        position: userData.position?.trim() || null,
-        is_active: userData.is_active !== undefined ? userData.is_active : true,
-        mfa_enabled: userData.mfa_enabled !== undefined ? userData.mfa_enabled : false
+        role_id: parseInt(userData.role_id),
+        username: userData.username || userData.email.trim().toLowerCase().split('@')[0],
+        is_active: userData.is_active ?? true,
       };
-      console.log('📤 [SUPER_ADMIN] Sending user data:', formattedData);
-      const response = await superadminApi.createUser(formattedData);
+
+      console.log('Creating user with payload:', { ...payload, password: '***' });
+
+      const response = await api.post('/users', payload, {
+        params: withBypassQuery(),
+      });
+
       return {
         success: true,
-        user: response.data,
-        message: response.data?.message || 'تم إنشاء المستخدم بنجاح'
+        user: response.data.user,
+        message: response.data.message || 'تم إنشاء المستخدم بنجاح',
       };
-    } catch (error) {
-      console.error('❌ [SUPER_ADMIN] Failed to create user:', error);
-      let errorMessage = error.message;
-      if (error.response?.data?.message) {
-        errorMessage = error.response.data.message;
-      } else if (error.message.includes('Network Error')) {
-        errorMessage = 'تعذر الاتصال بالخادم. يرجى التحقق من اتصال الشبكة.';
-      } else if (error.message.includes('500')) {
-        errorMessage = 'حدث خطأ في الخادم أثناء إنشاء المستخدم. يرجى المحاولة مرة أخرى.';
-      } else if (error.message.includes('400')) {
-        errorMessage = 'بيانات غير صالحة. يرجى التحقق من المدخلات.';
-      } else if (error.message.includes('409')) {
-        errorMessage = 'البريد الإلكتروني أو اسم المستخدم مستخدم مسبقاً.';
-      } else if (error.message.includes('403')) {
-        errorMessage = 'SUPER_ADMIN: غير مصرح بإنشاء المستخدم. يرجى التحقق من صلاحيات الخادم.';
+    } catch (e) {
+      console.error('Create user error:', e.response?.data || e.message);
+      
+      // Enhanced error extraction
+      let errorMessage = e.response?.data?.message || e.message;
+      const errorDetail = e.response?.data?.detail;
+      
+      // Handle specific backend error messages
+      if (errorMessage?.includes('البريد مستخدم') || errorMessage?.includes('البريد الإلكتروني مستخدم')) {
+        errorMessage = 'البريد الإلكتروني مستخدم بالفعل';
+      } else if (errorMessage?.includes('اسم المستخدم مستخدم')) {
+        errorMessage = 'اسم المستخدم مستخدم بالفعل';
+      } else if (errorMessage?.includes('الدور المحدد غير موجود')) {
+        errorMessage = 'الدور المحدد غير موجود';
+      } else if (e.response?.status === 500) {
+        errorMessage = 'خطأ في الخادم الداخلي. يرجى المحاولة لاحقاً';
       }
+
       return {
         success: false,
         error: errorMessage,
-        user: null
+        detail: errorDetail,
+        user: null,
+        status: e.response?.status,
       };
     }
   },
-  forceAccess: async (endpoint, data = {}) => {
+
+  getUserDetails: async (userId) => {
     try {
-      const response = await api(endpoint, {
-        ...data,
-        headers: {
-          ...data.headers,
-          'X-SuperAdmin-Force-Bypass': 'true',
-          'X-Bypass-All-Checks': 'true',
-          'X-Force-SuperAdmin-Override': 'true'
-        }
+      const response = await api.get(`/users/${userId}`, {
+        params: withBypassQuery(),
       });
-      return { success: true, data: response.data };
-    } catch (error) {
-      console.error(`❌ [SUPER_ADMIN] Force access failed for ${endpoint}:`, error);
-      return { success: false, error: error.message };
+      return { 
+        success: true, 
+        user: response.data.user 
+      };
+    } catch (e) {
+      console.error('Get user details error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        user: null,
+        status: e.response?.status,
+      };
     }
   },
+
+  updateUser: async (userId, userData) => {
+    try {
+      const payload = {
+        full_name: userData.full_name,
+        email: userData.email,
+        role_id: parseInt(userData.role_id),
+      };
+
+      const response = await api.put(`/users/${userId}`, payload, {
+        params: withBypassQuery(),
+      });
+
+      return {
+        success: true,
+        user: response.data.user,
+        message: response.data.message || 'تم تحديث بيانات المستخدم بنجاح',
+      };
+    } catch (e) {
+      console.error('Update user error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        user: null,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  deleteUser: async (userId) => {
+    try {
+      const response = await api.delete(`/users/${userId}`, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم حذف المستخدم',
+      };
+    } catch (e) {
+      console.error('Delete user error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  activateUser: async (userId) => {
+    try {
+      const response = await api.patch(`/users/${userId}/activate`, {}, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم تفعيل المستخدم بنجاح',
+        user: response.data.user,
+      };
+    } catch (e) {
+      console.error('Activate user error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  deactivateUser: async (userId) => {
+    try {
+      const response = await api.patch(`/users/${userId}/deactivate`, {}, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم تعطيل المستخدم بنجاح',
+        user: response.data.user,
+      };
+    } catch (e) {
+      console.error('Deactivate user error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  lockUser: async (userId) => {
+    try {
+      const response = await api.patch(`/users/${userId}/lock`, {}, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم قفل المستخدم بنجاح',
+        user: response.data.user,
+      };
+    } catch (e) {
+      console.error('Lock user error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  unlockUser: async (userId) => {
+    try {
+      const response = await api.patch(`/users/${userId}/unlock`, {}, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم فتح المستخدم بنجاح',
+        user: response.data.user,
+      };
+    } catch (e) {
+      console.error('Unlock user error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  updateUserRole: async (userId, roleData) => {
+    try {
+      const response = await api.put(`/users/${userId}/role`, roleData, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم تحديث دور المستخدم بنجاح',
+        user: response.data.user,
+      };
+    } catch (e) {
+      console.error('Update user role error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  resetUserPassword: async (userId, passwordData) => {
+    try {
+      const response = await api.patch(`/users/${userId}/reset-password`, passwordData, {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        message: response.data.message || 'تم إعادة تعيين كلمة المرور بنجاح',
+        user: response.data.user,
+      };
+    } catch (e) {
+      console.error('Reset password error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  getRecentUsers: async (limit = 5) => {
+    try {
+      const response = await api.get('/users/recent', {
+        params: withBypassQuery({ limit }),
+      });
+      return {
+        success: true,
+        users: response.data.users || [],
+      };
+    } catch (e) {
+      console.error('Get recent users error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        users: [],
+        status: e.response?.status,
+      };
+    }
+  },
+
+  /* ----------------------- ROLES --------------------------------------- */
+  getRoles: async () => {
+    try {
+      const response = await api.get('/roles', { params: withBypassQuery() });
+      return { 
+        success: true, 
+        roles: response.data.roles || response.data || [] 
+      };
+    } catch (e) {
+      console.error('Get roles error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        roles: [],
+        status: e.response?.status,
+      };
+    }
+  },
+
+  /* ----------------------- DASHBOARD ----------------------------------- */
+  getDashboardStats: async () => {
+    try {
+      const response = await api.get('/dashboard/stats', {
+        params: withBypassQuery(),
+      });
+      return { 
+        success: true, 
+        stats: response.data.stats || response.data 
+      };
+    } catch (e) {
+      console.error('Get dashboard stats error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        stats: null,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  /* ----------------------- AUTH TEST ----------------------------------- */
+  testAuth: async () => {
+    try {
+      const response = await api.get('/dashboard/stats', {
+        params: withBypassQuery(),
+      });
+      return { 
+        success: true, 
+        authenticated: true, 
+        data: response.data 
+      };
+    } catch (e) {
+      console.error('Auth test error:', e.response?.data || e.message);
+      return {
+        success: false,
+        authenticated: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+
+  /* ----------------------- HEALTH CHECK -------------------------------- */
+  healthCheck: async () => {
+    try {
+      const response = await api.get('/users/health/check', {
+        params: withBypassQuery(),
+      });
+      return {
+        success: true,
+        data: response.data,
+      };
+    } catch (e) {
+      console.error('Health check error:', e.response?.data || e.message);
+      return {
+        success: false,
+        error: e.response?.data?.message || e.message,
+        status: e.response?.status,
+      };
+    }
+  },
+};
+
+/* ==========================================================================
+   ENHANCED / SAFE WRAPPERS
+   ========================================================================== */
+export const enhancedSuperadminApi = {
+  // User management
+  safeGetUsers: async (params = {}) => {
+    const result = await superadminApi.getUsers(params);
+    if (!result.success && result.status === 401) {
+      result.shouldRedirect = true;
+      result.redirectMessage = ARABIC_ERROR_MESSAGES.AUTH_ERROR;
+    }
+    return result;
+  },
+
+  safeCreateUser: async (userData) => {
+    const result = await superadminApi.createUser(userData);
+    return result;
+  },
+
+  safeGetUserDetails: async (userId) => {
+    const result = await superadminApi.getUserDetails(userId);
+    return result;
+  },
+
+  safeUpdateUser: async (userId, userData) => {
+    const result = await superadminApi.updateUser(userId, userData);
+    return result;
+  },
+
+  safeDeleteUser: async (userId) => {
+    const result = await superadminApi.deleteUser(userId);
+    return result;
+  },
+
+  safeActivateUser: async (userId) => {
+    const result = await superadminApi.activateUser(userId);
+    return result;
+  },
+
+  safeDeactivateUser: async (userId) => {
+    const result = await superadminApi.deactivateUser(userId);
+    return result;
+  },
+
+  safeLockUser: async (userId) => {
+    const result = await superadminApi.lockUser(userId);
+    return result;
+  },
+
+  safeUnlockUser: async (userId) => {
+    const result = await superadminApi.unlockUser(userId);
+    return result;
+  },
+
+  safeUpdateUserRole: async (userId, roleData) => {
+    const result = await superadminApi.updateUserRole(userId, roleData);
+    return result;
+  },
+
+  safeResetUserPassword: async (userId, passwordData) => {
+    const result = await superadminApi.resetUserPassword(userId, passwordData);
+    return result;
+  },
+
+  safeGetRecentUsers: async (limit = 5) => {
+    const result = await superadminApi.getRecentUsers(limit);
+    return result;
+  },
+
+  // Roles
+  safeGetRoles: superadminApi.getRoles,
+
+  // Dashboard
+  safeGetDashboardStats: superadminApi.getDashboardStats,
+
+  // Health & Auth
+  safeTestAuth: superadminApi.testAuth,
+  safeHealthCheck: superadminApi.healthCheck,
+
+  /** Comprehensive health check – tells you everything in one call */
   checkApiHealth: async () => {
-    try {
-      const tokenStatus = TokenManager.getCleanToken();
-      const response = await superadminApi.healthCheck();
-      const superAdminValidation = await enhancedSuperadminApi.validateSuperAdminAccess();
-      return {
-        api: true,
-        authentication: !!tokenStatus,
-        tokenValid: TokenManager.isValidUUID(tokenStatus),
-        backend: response.status === 200,
-        superAdminAccess: superAdminValidation.success,
-        status: response.data
-      };
-    } catch (error) {
-      return {
-        api: false,
-        authentication: false,
-        tokenValid: false,
-        backend: false,
-        superAdminAccess: false,
-        error: error.message
-      };
-    }
-  }
-};
+    const token = TokenManager.getToken();
+    const auth = await superadminApi.testAuth();
+    const health = await superadminApi.healthCheck();
+    
+    return {
+      api: true,
+      authentication: !!token,
+      tokenValid: !!token,
+      backend: auth.success,
+      superAdminAccess: auth.authenticated,
+      routesHealthy: health.success,
+      status: auth.success && health.success ? 'healthy' : 'issues_detected',
+      authTest: auth,
+      healthCheck: health,
+      bypassEnabled: SUPER_ADMIN_BYPASS_CONFIG.ENABLED,
+      timestamp: new Date().toISOString(),
+    };
+  },
 
-// =============================================================================
-// ULTIMATE SUPER_ADMIN BYPASS UTILITIES
-// =============================================================================
-
-export const superAdminBypass = {
-  forceRequest: async (method, url, data = {}) => {
+  /** forceAccess – works with bypass header, no instance reuse */
+  forceAccess: async (endpoint, { method = 'GET', data, params } = {}) => {
+    const token = TokenManager.getToken();
+    const cfg = {
+      method,
+      url: `${API_BASE_URL}${endpoint}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Type': 'superadmin-dashboard',
+        'X-Client-Version': '1.0.0',
+        ...(token && { Authorization: token }),
+        ...(SUPER_ADMIN_BYPASS_CONFIG.ENABLED && {
+          [SUPER_ADMIN_BYPASS_CONFIG.METHODS.HEADER]: SUPER_ADMIN_BYPASS_CONFIG.VALUES.HEADER,
+        }),
+      },
+      timeout: API_TIMEOUT,
+    };
+    
+    if (data) cfg.data = data;
+    if (params) cfg.params = withBypassQuery(params);
+    
+    console.log(`FORCE ACCESS → ${method} ${endpoint}`, data ? { ...data, password: data.password ? '***' : undefined } : params);
+    
     try {
-      const token = TokenManager.getCleanToken();
-      const response = await axios({
-        method,
-        url: `${API_BASE_URL}${url}`,
-        data: method !== 'GET' ? data : undefined,
-        params: method === 'GET' ? data : undefined,
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'X-Session-Token': token,
-          'X-SuperAdmin-Force-Bypass': 'true',
-          'X-Bypass-All-Checks': 'true',
-          'X-Force-SuperAdmin-Override': 'true',
-          'X-Ultimate-Bypass': 'true',
-          'X-Client-Type': 'superadmin-dashboard-ultimate'
-        }
-      });
-      return { success: true, data: response.data };
-    } catch (error) {
-      console.error(`❌ SUPER_ADMIN bypass failed for ${method} ${url}:`, error);
-      return { success: false, error: error.message };
+      const res = await axios(cfg);
+      return res;
+    } catch (e) {
+      console.error(`FORCE ACCESS FAILED → ${endpoint}`, e.response?.data || e.message);
+      throw e;
     }
   },
-  getUsersUltimate: async (params = {}) => {
-    return superAdminBypass.forceRequest('GET', '/api/v1/superadmin/users', params);
+
+  /** Mock function for testing user creation */
+  createUserMock: async (userData) => {
+    console.log('MOCK: Creating user with data:', { ...userData, password: '***' });
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Mock successful response
+    const mockUser = {
+      id: Math.floor(Math.random() * 1000) + 100,
+      uuid: 'mock-uuid-' + Date.now(),
+      username: userData.username || userData.email.split('@')[0].toLowerCase(),
+      email: userData.email,
+      full_name: userData.full_name,
+      role_id: userData.role_id,
+      role_name: 'WORKER',
+      is_active: true,
+      is_locked: false,
+      mfa_enabled: false,
+      email_verified: false,
+      failed_login_attempts: 0,
+      last_login: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_token: 'mock-session-token',
+      session_expires: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+    };
+    
+    return {
+      success: true,
+      user: mockUser,
+      message: 'تم إنشاء المستخدم بنجاح (وهمي للاختبار)'
+    };
   }
 };
 
-// =============================================================================
-// ENHANCED UTILITY FUNCTIONS FOR SUPER_ADMIN
-// =============================================================================
-
-/**
- * Validate current authentication token
- */
-export const validateCurrentToken = () => {
-  const token = TokenManager.getCleanToken();
+/* ==========================================================================
+   UTILITIES
+   ========================================================================== */
+export const debugSuperAdminAccess = () => {
+  const token = TokenManager.getToken();
+  console.group('SUPER_ADMIN DEBUG');
+  console.log('Token →', { has: !!token, preview: token?.substring(0, 20) });
+  console.log('Bypass →', SUPER_ADMIN_BYPASS_CONFIG);
+  console.groupEnd();
+  
   return {
     hasToken: !!token,
-    isValid: TokenManager.isValidUUID(token),
-    token
+    tokenPreview: token?.substring(0, 20),
+    bypassEnabled: SUPER_ADMIN_BYPASS_CONFIG.ENABLED,
   };
 };
 
-/**
- * Test SUPER_ADMIN authentication with bypass capability
- */
-export const testSuperAdminAuth = async () => {
-  try {
-    const response = await superadminApi.getDashboardStats();
-    return { success: true, data: response.data, method: 'normal' };
-  } catch (error) {
-    console.error('Normal SUPER_ADMIN auth failed, trying bypass...');
-    const bypassResult = await superAdminBypass.forceRequest('GET', '/api/v1/superadmin/dashboard/stats');
-    if (bypassResult.success) {
-      return { ...bypassResult, method: 'bypass' };
+export const setSuperAdminBypass = (on = true) => {
+  if (!IS_DEVELOPMENT && on) {
+    console.warn('Bypass disabled in production');
+    return false;
+  }
+  SUPER_ADMIN_BYPASS_CONFIG.ENABLED = on;
+  console.log(`Bypass ${on ? 'ON' : 'OFF'}`);
+  return on;
+};
+
+export const getSuperAdminBypassStatus = () => ({
+  enabled: SUPER_ADMIN_BYPASS_CONFIG.ENABLED,
+  config: SUPER_ADMIN_BYPASS_CONFIG,
+});
+
+/* Error formatter -------------------------------------------------------- */
+export const formatErrorMessage = (err) => {
+  if (err.response) {
+    const { status, data } = err.response;
+    if (status === 401) return ARABIC_ERROR_MESSAGES.AUTH_ERROR;
+    if (status === 403) return ARABIC_ERROR_MESSAGES.FORBIDDEN;
+    if (status === 404) return ARABIC_ERROR_MESSAGES.NOT_FOUND;
+    if (status === 500) return ARABIC_ERROR_MESSAGES.SERVER_ERROR;
+    return data?.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
+  }
+  if (err.request) return ARABIC_ERROR_MESSAGES.NETWORK_ERROR;
+  return err.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
+};
+
+/* Comprehensive error handler -------------------------------------------- */
+export const handleApiError = (err, ctx = '') => {
+  const out = {
+    success: false,
+    error: ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR,
+    message: ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR,
+    context: ctx,
+    shouldRedirect: false,
+    bypassEnabled: SUPER_ADMIN_BYPASS_CONFIG.ENABLED,
+    timestamp: new Date().toISOString(),
+  };
+
+  if (err.response) {
+    const { status, data } = err.response;
+    out.status = status;
+    out.details = data;
+    
+    switch (status) {
+      case 401:
+        out.error = ARABIC_ERROR_MESSAGES.AUTH_ERROR;
+        out.message = 'انتهت جلستك. يرجى تسجيل الدخول مرة أخرى.';
+        out.shouldRedirect = true;
+        break;
+      case 403:
+        out.error = ARABIC_ERROR_MESSAGES.FORBIDDEN;
+        out.message = data?.message || 'غير مصرح لك بتنفيذ هذا الإجراء.';
+        break;
+      case 404:
+        out.error = ARABIC_ERROR_MESSAGES.NOT_FOUND;
+        out.message = data?.message || `لم يتم العثور على ${ctx}.`;
+        break;
+      case 409:
+        out.error = 'تعارض في البيانات';
+        out.message = data?.message || 'البيانات المرسلة تتعارض مع بيانات موجودة.';
+        break;
+      case 500:
+        out.error = ARABIC_ERROR_MESSAGES.SERVER_ERROR;
+        out.message = 'حدث خطأ في الخادم. يرجى المحاولة مرة أخرى.';
+        break;
+      default:
+        out.error = data?.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
+        out.message = data?.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
     }
-    return { success: false, error: error.message, method: 'failed' };
+  } else if (err.request) {
+    out.error = ARABIC_ERROR_MESSAGES.NETWORK_ERROR;
+    out.message = 'تعذر الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت.';
+  } else {
+    out.error = err.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
+    out.message = err.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
   }
+
+  return out;
 };
 
-/**
- * Enhanced debug function for SUPER_ADMIN access issues
- */
-export const debugSuperAdminAccess = async () => {
-  const tokenStatus = validateCurrentToken();
-  const healthStatus = await enhancedSuperadminApi.checkApiHealth();
-  console.group('🔐 SUPER_ADMIN ACCESS DEBUG');
-  console.log('Token Status:', tokenStatus);
-  console.log('API Health:', healthStatus);
-  console.log('LocalStorage session_token:', localStorage.getItem('session_token'));
-  console.log('Current URL:', window.location.href);
-  console.log('API Base URL:', API_BASE_URL);
-  try {
-    const testResult = await testSuperAdminAuth();
-    console.log('SUPER_ADMIN Access Test:', testResult);
-  } catch (error) {
-    console.error('SUPER_ADMIN Access Test Failed:', error);
-  }
-  console.groupEnd();
-  return { tokenStatus, healthStatus };
-};
-
-/**
- * Format error message for user display (Legacy handleApiError)
- */
-export const formatErrorMessage = (error) => {
-  if (error.response) {
-    const { status, data } = error.response;
-    return data?.message || ARABIC_ERROR_MESSAGES[`HTTP_${status}`] || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
-  } else if (error.request) {
-    return ARABIC_ERROR_MESSAGES.NETWORK_ERROR;
-  }
-  return error.message || ARABIC_ERROR_MESSAGES.UNKNOWN_ERROR;
-};
-
-/**
- * Clear superadmin cache
- */
-export const clearSuperAdminCache = async () => {
-  try {
-    await superadminApi.clearCache();
-    TokenManager.clearTokens();
-    console.log('✅ SuperAdmin cache cleared successfully');
-    return { success: true };
-  } catch (error) {
-    console.error('❌ Failed to clear SuperAdmin cache:', error);
-    return { success: false, error: error.message };
-  }
-};
-
-// =============================================================================
-// COMPATIBILITY EXPORTS - For backward compatibility
-// =============================================================================
-
-/**
- * debugAuthStatus - Legacy compatibility function
- * @deprecated Use debugSuperAdminAccess instead
- */
-export const debugAuthStatus = debugSuperAdminAccess;
-
-/**
- * handleApiError - Legacy compatibility function
- * @deprecated Use formatErrorMessage instead
- */
-export const handleApiError = formatErrorMessage;
-
-// Export everything with legacy names for backward compatibility
-export {
-  superadminApi as default,
-  //superAdminBypass,
-  //testSuperAdminAuth,
-  //debugSuperAdminAccess,
-  //validateCurrentToken,
-  //clearSuperAdminCache,
-  //formatErrorMessage,
-  //debugSuperAdminAccess as debugAuthStatus,
-  //formatErrorMessage as handleApiError
+/* ==========================================================================
+   DEFAULT EXPORT
+   ========================================================================== */
+export default {
+  // Core
+  superadminApi,
+  enhancedSuperadminApi,
+  
+  // Utilities
+  TokenManager,
+  handleApiError,
+  formatErrorMessage,
+  debugSuperAdminAccess,
+  setSuperAdminBypass,
+  getSuperAdminBypassStatus,
+  forceAccess: enhancedSuperadminApi.forceAccess,
+  
+  // Shortcuts
+  getUsers: superadminApi.getUsers,
+  createUser: superadminApi.createUser,
+  getUserDetails: superadminApi.getUserDetails,
+  updateUser: superadminApi.updateUser,
+  deleteUser: superadminApi.deleteUser,
+  activateUser: superadminApi.activateUser,
+  deactivateUser: superadminApi.deactivateUser,
+  lockUser: superadminApi.lockUser,
+  unlockUser: superadminApi.unlockUser,
+  updateUserRole: superadminApi.updateUserRole,
+  resetUserPassword: superadminApi.resetUserPassword,
+  getRecentUsers: superadminApi.getRecentUsers,
+  getRoles: superadminApi.getRoles,
+  getDashboardStats: superadminApi.getDashboardStats,
+  testAuth: superadminApi.testAuth,
+  healthCheck: superadminApi.healthCheck,
+  
+  // Mock functions
+  createUserMock: enhancedSuperadminApi.createUserMock,
 };
