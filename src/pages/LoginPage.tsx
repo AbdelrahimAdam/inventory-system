@@ -15,8 +15,8 @@ const LoginPage: React.FC = () => {
     debugLogin 
   } = useAuth();
 
-  const [email, setEmail] = useState("abdelrahim.elbran@gmail.com");
-  const [password, setPassword] = useState("Abdoa@90@90@90");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [infoMessage, setInfoMessage] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -186,8 +186,6 @@ const LoginPage: React.FC = () => {
         {process.env.NODE_ENV === 'development' && (
           <div className="mb-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-md text-sm">
             <strong>Development Mode</strong>
-            <br />
-            Email: {email}
             <br />
             Using AuthContext login function
           </div>
