@@ -101,7 +101,6 @@ interface AuthContextProps {
   canPerform: (action: string) => boolean;
   hasPermission: (featureCode: string, action?: string) => boolean;
   refreshUserClaims: () => Promise<void>;
-  debugLogin: (email: string, password: string) => Promise<any>;
 }
 
 // === Context ===
@@ -174,17 +173,45 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     enablePersistence().catch(console.error);
   }, []);
 
-  // === Enhanced Role normalization function ===
+  // === FIXED: Role normalization function - HANDLES NUMERIC ROLES ===
   const normalizeRole = (role: string): string => {
     if (!role) return 'user';
     
     const normalized = role.toLowerCase().trim();
     
-    // Handle all super admin variations
-    if (normalized === 'superadmin' || normalized === 'super_admin' || normalized === 'super-admin' || normalized === 'super admin') {
+    console.log('🔄 [AuthContext] Normalizing role:', { 
+      input: role, 
+      normalized,
+      type: typeof role 
+    });
+    
+    // Handle numeric roles (like '2', '3', etc.)
+    const numericRoleMap: Record<string, string> = {
+      '1': 'superadmin',
+      '2': 'manager',
+      '3': 'worker', 
+      '4': 'buyer',
+      '5': 'supplier',
+      '6': 'user'
+    };
+    
+    // If it's a numeric role, map it to proper role name
+    if (numericRoleMap[normalized]) {
+      const mappedRole = numericRoleMap[normalized];
+      console.log('🔢 [AuthContext] Mapped numeric role:', { 
+        input: normalized, 
+        mapped: mappedRole 
+      });
+      return mappedRole;
+    }
+    
+    // Handle string role variations (ONLY for superadmin)
+    if (normalized === 'super_admin' || normalized === 'super-admin' || normalized === 'super admin') {
       return 'superadmin';
     }
     
+    // Return the role AS-IS for all other roles (manager, worker, etc.)
+    console.log('🔤 [AuthContext] Using role as-is:', normalized);
     return normalized;
   };
 
@@ -202,7 +229,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       const db = await getFirestore();
       
-      const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
+      // Try to get user data from Firestore with fallback
+      let userDoc;
+      try {
+        userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
+      } catch (error: any) {
+        console.warn("⚠️ Firestore access blocked during claims recovery:", error);
+        return null;
+      }
+      
       if (userDoc.exists()) {
         const userData = userDoc.data();
         console.log("📋 Found user data in Firestore:", userData);
@@ -261,57 +296,59 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // === Debug login function ===
-  const debugLogin = async (email: string, password: string) => {
-    console.log('=== DEBUG LOGIN START ===');
-    console.log('Email:', email);
+  // === Emergency User Recovery ===
+  const emergencyUserRecovery = async (firebaseUser: FirebaseUser): Promise<User> => {
+    console.log("🚨 EMERGENCY: Creating user profile without Firestore access");
     
+    // Create a basic user object without Firestore
+    const emergencyUser: User = {
+      uid: firebaseUser.uid,
+      email: firebaseUser.email,
+      name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+      role: 'user', // Default role
+      features: {},
+      isActive: true,
+      emailVerified: firebaseUser.emailVerified,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      settings: { theme: "light", language: "en", notifications: true },
+    };
+    
+    console.log("✅ Emergency user created with role:", emergencyUser.role);
+    
+    // Try to update Firestore in background (don't wait for it)
     try {
-      const auth = await getAuth();
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
+      const db = await getFirestore();
+      const userData = {
+        uid: firebaseUser.uid,
+        email: firebaseUser.email,
+        name: emergencyUser.name,
+        role: emergencyUser.role,
+        features: emergencyUser.features,
+        isActive: true,
+        emailVerified: firebaseUser.emailVerified,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        settings: emergencyUser.settings,
+      };
       
-      console.log('✅ Firebase Auth Success - User UID:', user.uid);
-      
-      // Get token without refresh first
-      const idToken1 = await user.getIdTokenResult(false);
-      console.log('🔑 Claims WITHOUT refresh:', idToken1.claims);
-      console.log('📅 Token issued:', new Date(idToken1.issuedAtTime).toLocaleString());
-      
-      // Get token with refresh
-      const idToken2 = await user.getIdTokenResult(true);
-      console.log('🔑 Claims WITH refresh:', idToken2.claims);
-      console.log('📅 Token issued:', new Date(idToken2.issuedAtTime).toLocaleString());
-      
-      // Check Firestore user data
-      try {
-        const db = await getFirestore();
-        const userDoc = await getDoc(doc(db, "users", user.uid));
-        if (userDoc.exists()) {
-          console.log('📋 Firestore user data:', userDoc.data());
-        } else {
-          console.log('❌ No Firestore user document found');
-        }
-      } catch (firestoreError) {
-        console.error('❌ Firestore error:', firestoreError);
-      }
-      
-      console.log('=== DEBUG LOGIN END ===');
-      
-      return { success: true, claims: idToken2.claims };
-    } catch (error: any) {
-      console.error('❌ Debug login error:', error);
-      return { success: false, error: error.message };
+      setDoc(doc(db, "users", firebaseUser.uid), userData).catch(err => 
+        console.warn("Background Firestore update failed:", err)
+      );
+    } catch (bgError) {
+      console.warn("Background Firestore update failed:", bgError);
     }
+    
+    return emergencyUser;
   };
 
-  // === Process Firebase user ===
+  // === Enhanced Process Firebase user with multiple fallbacks ===
   const processFirebaseUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
     try {
       console.log("🔄 Processing Firebase user:", firebaseUser.uid);
 
       let customClaims: any = {};
-      let claimsRecovered = false;
+      let userData: any = {};
       
       try {
         const idTokenResult = await refreshAuthToken(firebaseUser);
@@ -322,49 +359,43 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         return null;
       }
 
-      // If no role claim found, try to recover from Firestore
-      if (!customClaims.role || customClaims.role === 'undefined') {
-        console.warn("⚠️ No valid role claim found in token, attempting recovery...");
-        const recoveredClaims = await handleMissingClaims(firebaseUser);
-        
-        if (recoveredClaims) {
-          customClaims = recoveredClaims;
-          claimsRecovered = true;
-        } else {
-          console.error("❌ Cannot proceed without role claims");
-          return null;
-        }
-      }
-
       const db = await getFirestore();
       
-      let userData: any = {};
+      // Try to get user data from Firestore with multiple fallbacks
       try {
         const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
         if (userDoc.exists()) {
           userData = userDoc.data();
+          console.log("📋 Found user data in Firestore:", userData);
         } else {
+          console.log("📝 No user document found, will create one");
           await initializeUserDocument(firebaseUser, customClaims);
         }
       } catch (err: any) {
-        console.error("Firestore access error:", err);
-        if (err.code === 'permission-denied') {
-          console.error("Firebase Rules blocked access");
-          if (customClaims.role) {
-            console.log("Proceeding with claims-only data");
-            userData = {};
-          } else {
-            throw new Error("Access denied by security rules");
-          }
-        } else if (err.code === 'unavailable') {
-          console.warn("Firestore offline: Using cached data");
-          const cachedSnap = await getDoc(doc(db, "users", firebaseUser.uid)).catch(() => null);
-          if (cachedSnap?.exists()) {
-            userData = cachedSnap.data();
-          }
+        console.error("❌ Firestore access error:", err);
+        
+        // If we can't access Firestore but have claims, proceed with claims
+        if (customClaims.role && customClaims.role !== 'undefined') {
+          console.log("⚠️ Firestore blocked but have claims, proceeding...");
+          userData = {};
         } else {
-          console.error("Firestore error:", err);
+          // If no claims and no Firestore access, use emergency recovery
+          console.log("🆘 Emergency recovery: No claims and Firestore blocked");
+          return await emergencyUserRecovery(firebaseUser);
         }
+      }
+
+      // If no role claim found but we have Firestore data, use that
+      if ((!customClaims.role || customClaims.role === 'undefined') && userData.role) {
+        console.log("🔄 Using Firestore role since claims are missing:", userData.role);
+        customClaims.role = userData.role;
+        customClaims.features = userData.features || {};
+      }
+
+      // If still no role, this is a critical error - use emergency recovery
+      if (!customClaims.role || customClaims.role === 'undefined') {
+        console.error("❌ CRITICAL: No role found in claims or Firestore");
+        return await emergencyUserRecovery(firebaseUser);
       }
 
       const rawRole = customClaims.role || userData.role || 'user';
@@ -386,22 +417,32 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         features,
         isActive,
         emailVerified: firebaseUser.emailVerified,
-        createdAt: userData.createdAt || serverTimestamp(),
-        updatedAt: userData.updatedAt || serverTimestamp(),
+        createdAt: userData.createdAt || new Date(),
+        updatedAt: userData.updatedAt || new Date(),
         lastVerificationSent: userData.lastVerificationSent || null,
         settings: userData.settings || { theme: "light", language: "en", notifications: true },
       };
 
-      if ((!userData.role || userData.role !== role || !userData.uid) && !claimsRecovered) {
-        console.log("Syncing user document with latest role:", role);
-        await syncUserDocument(firebaseUser.uid, processedUser);
+      // Sync user document if needed (in background)
+      if ((!userData.role || userData.role !== role || !userData.uid)) {
+        console.log("🔄 Syncing user document with latest role:", role);
+        syncUserDocument(firebaseUser.uid, processedUser).catch(err => 
+          console.warn("Background sync failed:", err)
+        );
       }
 
       console.log("✅ User processed successfully - Role:", role, "Is SuperAdmin:", checkIsSuperAdmin(role));
       return processedUser;
     } catch (error) {
       console.error('❌ Error processing user:', error);
-      return null;
+      
+      // Ultimate fallback - try emergency recovery
+      try {
+        return await emergencyUserRecovery(firebaseUser);
+      } catch (emergencyError) {
+        console.error('❌ Emergency recovery also failed:', emergencyError);
+        return null;
+      }
     }
   };
 
@@ -426,12 +467,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       };
 
       await setDoc(doc(db, "users", firebaseUser.uid), userData);
+      console.log("✅ User document initialized successfully");
     } catch (error: any) {
       if (error.code === 'permission-denied') {
         console.error("Firebase Rules blocked user document creation");
-      } else if (error.code !== 'unavailable') {
+      } else {
         console.error("Failed to create user document:", error);
       }
+      throw error;
     }
   };
 
@@ -452,7 +495,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (error: any) {
       if (error.code === 'permission-denied') {
         console.error("Firebase Rules blocked user document sync");
-      } else if (error.code !== 'unavailable') {
+      } else {
         console.error("Failed to sync user doc:", error);
       }
     }
@@ -536,20 +579,38 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const isSuperAdmin = user ? checkIsSuperAdmin(user.role) : false;
   const isAuthenticated = !!user && user.isActive;
 
+  // === FIXED: Redirect path function with NUMERIC ROLE HANDLING ===
   const getRedirectPath = (role?: string): string => {
     const r = role || user?.role;
+    const normalizedRole = normalizeRole(r || 'user');
+    
+    console.log('📍 [AuthContext] Determining redirect path for role:', { 
+      rawRole: r,
+      normalizedRole
+    });
+    
     const paths: Record<string, string> = {
-      superadmin: "/superadmin/dashboard",
-      super_admin: "/superadmin/dashboard",
-      manager: "/manager/dashboard",
-      worker: "/worker/dashboard",
-      buyer: "/buyer/dashboard",
-      supplier: "/supplier/dashboard",
+      'superadmin': "/superadmin/dashboard",
+      'super_admin': "/superadmin/dashboard",
+      'manager': "/manager/dashboard",
+      'worker': "/worker/dashboard",
+      'buyer': "/buyer/dashboard",
+      'supplier': "/supplier/dashboard",
+      'user': "/dashboard",
     };
-    return paths[r || ''] || "/dashboard";
+    
+    const path = paths[normalizedRole] || "/dashboard";
+    
+    console.log('📍 [AuthContext] Redirect path determined:', {
+      rawRole: r,
+      normalizedRole,
+      path
+    });
+    
+    return path;
   };
 
-  // === Enhanced Login with detailed logging ===
+  // === Enhanced Login with robust error handling ===
   const login = async (email: string, password: string): Promise<LoginResponse> => {
     setIsLoggingIn(true);
     try {
@@ -560,10 +621,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       console.log('✅ Firebase auth success, UID:', userCredential.user.uid);
       
-      // Get initial claims
-      const initialToken = await userCredential.user.getIdTokenResult(false);
-      console.log('🔑 Initial claims:', initialToken.claims);
-      
       // Force token refresh to get latest claims
       console.log('🔄 Forcing token refresh...');
       const refreshedToken = await refreshAuthToken(userCredential.user);
@@ -572,13 +629,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const processedUser = await processFirebaseUser(userCredential.user);
       
       if (processedUser) {
-        console.log('✅ Processed user role:', processedUser.role);
-        console.log('✅ Is superadmin?', checkIsSuperAdmin(processedUser.role));
+        console.log('✅ Processed user details:', {
+          rawRole: processedUser.role,
+          normalizedRole: normalizeRole(processedUser.role),
+          isSuperAdmin: checkIsSuperAdmin(processedUser.role),
+          email: processedUser.email
+        });
         
         setUser(processedUser);
         
         const redirectPath = getRedirectPath(processedUser.role);
-        console.log('📍 Redirecting to:', redirectPath);
+        console.log('📍 Redirecting to:', redirectPath, 'for role:', processedUser.role);
         
         navigate(redirectPath, { replace: true });
         return { success: true, user: processedUser };
@@ -600,23 +661,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // === Register with Firebase Rules compliance ===
+  // === Enhanced User Registration with better error handling ===
   const registerUser = async (name: string, email: string, password: string, role: string): Promise<RegisterResponse> => {
     try {
+      console.log('🚀 Starting user registration process...');
+      
       const auth = await getAuth();
       const db = await getFirestore();
       
+      // 1. Create Firebase auth user
+      console.log('📝 Creating Firebase auth user...');
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const firebaseUser = userCredential.user;
+      
+      console.log('✅ Firebase user created:', firebaseUser.uid);
+      
+      // 2. Update profile with name
       await updateProfile(firebaseUser, { displayName: name });
 
-      const normalizedRole = normalizeRole(role) as User['role'];
+      // FIXED: Use role AS-IS, no normalization during registration
+      const userRole = role as User['role'];
+      console.log('🎯 Using role AS-IS (NO NORMALIZATION):', userRole);
       
+      // 3. Create user document in Firestore
       const userData = {
         uid: firebaseUser.uid,
         name, 
         email, 
-        role: normalizedRole, 
+        role: userRole, // Store the role exactly as provided
         features: {}, 
         isActive: true,
         emailVerified: false, 
@@ -625,51 +697,63 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         updatedAt: serverTimestamp()
       };
 
+      console.log('💾 Creating user document in Firestore...');
       await setDoc(doc(db, "users", firebaseUser.uid), userData);
+      console.log('✅ User document created successfully');
 
+      // 4. Set custom claims via cloud function (non-blocking)
       try {
+        console.log('☁️ Setting custom claims via cloud function...');
         const { getFunctions } = await import('firebase/functions');
         const functions = getFunctions();
         const setUserRole = httpsCallable(functions, 'setUserRoleAndFeatures');
         
-        await setUserRole({ 
+        // Don't wait for this to complete
+        setUserRole({ 
           targetUserId: firebaseUser.uid, 
-          role: normalizedRole, 
+          role: userRole, // Use the exact role
           features: {} 
+        }).then(() => {
+          console.log('✅ Cloud function completed');
+          // Refresh token in background
+          firebaseUser.getIdToken(true).catch(() => {});
+        }).catch(cloudError => {
+          console.warn("⚠️ Cloud function failed:", cloudError);
         });
         
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        await firebaseUser.getIdToken(true);
-        
-      } catch (err) {
-        console.warn("Cloud function unavailable - claims may not be set immediately:", err);
+      } catch (cloudError) {
+        console.warn("⚠️ Cloud function unavailable:", cloudError);
       }
 
-      const verificationResult = await EmailVerificationService.sendVerificationEmail();
-      if (verificationResult.success) {
-        await updateDoc(doc(db, "users", firebaseUser.uid), { 
-          lastVerificationSent: serverTimestamp() 
-        });
-      }
+      // 5. Send verification email (non-blocking)
+      EmailVerificationService.sendVerificationEmail().then(verificationResult => {
+        if (verificationResult.success) {
+          updateDoc(doc(db, "users", firebaseUser.uid), { 
+            lastVerificationSent: serverTimestamp() 
+          }).catch(() => {});
+        }
+      }).catch(() => {});
 
+      // 6. Process and return the user immediately
       const processedUser = await processFirebaseUser(firebaseUser);
       
       if (!processedUser) {
+        // Even if processing fails, return success since user was created
+        console.warn("⚠️ User created but processing failed");
         return { 
-          success: false, 
-          message: "User created but failed to load user data. Please refresh the page." 
+          success: true, 
+          message: "User created successfully. You can now login." 
         };
       }
 
+      console.log('🎉 User registration completed successfully');
       return {
         success: true,
         user: processedUser,
-        message: verificationResult.success
-          ? 'Please check your email for verification.'
-          : 'Registered, but verification email failed.'
+        message: 'User created successfully. Please check your email for verification.'
       };
     } catch (error: any) {
-      console.error('Registration error:', error);
+      console.error('❌ Registration error:', error);
       
       if (error.code === 'permission-denied') {
         return { success: false, message: "Registration not permitted by security rules" };
@@ -720,7 +804,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (err.code === 'permission-denied') {
         console.error("Firebase Rules blocked settings update");
         throw new Error("Permission denied to update settings");
-      } else if (err.code !== 'unavailable') {
+      } else {
         throw err;
       }
     }
@@ -754,7 +838,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         });
         setUser(prev => prev ? { ...prev, lastVerificationSent: new Date() } : null);
       } catch (err: any) {
-        if (err.code !== 'unavailable') console.error(err);
+        console.error("Failed to update verification timestamp:", err);
       }
     }
     return result;
@@ -771,7 +855,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         });
         setUser(prev => prev ? { ...prev, lastVerificationSent: new Date() } : null);
       } catch (err: any) {
-        if (err.code !== 'unavailable') console.error(err);
+        console.error("Failed to update verification timestamp:", err);
       }
     }
     return result;
@@ -809,6 +893,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
               if (processedUser) {
                 setUser(processedUser);
               } else {
+                console.warn("❌ Failed to process user in auth listener");
                 setUser(null);
               }
             } catch (error) {
@@ -887,7 +972,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     canPerform,
     hasPermission,
     refreshUserClaims,
-    debugLogin,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

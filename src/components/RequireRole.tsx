@@ -51,16 +51,37 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   const accessCheckId = useRef(0);
 
-  // ✅ Role normalization for Firebase - FIXED VERSION
-  const normalizeRole = (userRole: string): FirebaseRole => {
+  // ✅ ENHANCED Role normalization for Firebase - FIXED VERSION
+  const normalizeRole = (userRole: any): FirebaseRole => {
+    console.log('🔄 [RequireRole] Normalizing role:', { input: userRole, type: typeof userRole });
+    
+    // Handle null/undefined
     if (!userRole) return "user";
     
-    const role = userRole.toLowerCase().trim();
+    // Convert to string and normalize
+    const roleStr = String(userRole).toLowerCase().trim();
     
+    // Handle numeric roles (like '2')
+    const numericRoleMap: Record<string, FirebaseRole> = {
+      '1': 'superadmin',
+      '2': 'manager', 
+      '3': 'worker',
+      '4': 'buyer',
+      '5': 'supplier',
+      '6': 'user'
+    };
+    
+    // If it's a numeric role, map it
+    if (numericRoleMap[roleStr]) {
+      console.log('🔢 [RequireRole] Mapped numeric role:', { input: roleStr, mapped: numericRoleMap[roleStr] });
+      return numericRoleMap[roleStr];
+    }
+    
+    // Handle string roles
     const roleMap: Record<string, FirebaseRole> = {
       'superadmin': "superadmin",
       'super_admin': "superadmin",
-      'admin': "superadmin", // Map admin to superadmin for Firebase
+      'admin': "superadmin",
       'manager': "manager",
       'administrator': "manager",
       'worker': "worker",
@@ -73,8 +94,25 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       'client': "buyer"
     };
 
-    return roleMap[role] || "worker";
+    const normalizedRole = roleMap[roleStr] || "worker";
+    console.log('🔤 [RequireRole] Mapped string role:', { input: roleStr, mapped: normalizedRole });
+    
+    return normalizedRole;
   };
+
+  // ✅ Get user's actual role with proper normalization
+  const getUserRole = useCallback((): FirebaseRole => {
+    if (!user?.role) return "user";
+    
+    const normalized = normalizeRole(user.role);
+    console.log('👤 [RequireRole] User role resolved:', { 
+      raw: user.role, 
+      normalized,
+      isSuperAdmin 
+    });
+    
+    return normalized;
+  }, [user, isSuperAdmin]);
 
   // ✅ SUPER_ADMIN has immediate access to everything - FIXED
   const hasRequiredRole = useCallback((): boolean => {
@@ -84,31 +122,38 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       return true;
     }
 
+    // If no roles required, allow access
+    if (!allowedRoles.length) {
+      console.log('🟡 [RequireRole] No roles required - allowing access');
+      return true;
+    }
+
+    const userRole = getUserRole();
+    
     // Use the hasRole method from AuthContext which properly checks custom claims
     if (hasRole && typeof hasRole === 'function') {
-      return hasRole(allowedRoles);
+      const hasRoleResult = hasRole(allowedRoles);
+      console.log('🔍 [RequireRole] AuthContext hasRole result:', { 
+        userRole, 
+        allowedRoles, 
+        result: hasRoleResult 
+      });
+      return hasRoleResult;
     }
 
     // Fallback check if hasRole method is not available
-    if (!allowedRoles.length) return false;
-    if (!user?.role) return false;
-
-    const userRole = normalizeRole(user.role);
     const hasExactRole = allowedRoles.some(allowedRole => 
       allowedRole.toLowerCase() === userRole
     );
 
-    if (!hasExactRole) {
-      console.log('🔴 [RequireRole] Role requirement not met:', {
-        userRole,
-        allowedRoles,
-        userRoleFromAuth: user.role,
-        isSuperAdmin
-      });
-    }
+    console.log('🔍 [RequireRole] Fallback role check:', {
+      userRole,
+      allowedRoles,
+      hasExactRole
+    });
 
     return hasExactRole;
-  }, [allowedRoles, user, isSuperAdmin, hasRole]);
+  }, [allowedRoles, getUserRole, isSuperAdmin, hasRole]);
 
   // ✅ Ownership check - SUPER_ADMIN bypasses all ownership restrictions
   const hasOwnership = useCallback((): boolean => {
@@ -145,7 +190,12 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     
     // Use the hasFeature method from AuthContext
     if (hasFeature && typeof hasFeature === 'function') {
-      return hasFeature(requiredFeature);
+      const hasFeatureResult = hasFeature(requiredFeature);
+      console.log('🔍 [RequireRole] AuthContext hasFeature result:', {
+        requiredFeature,
+        result: hasFeatureResult
+      });
+      return hasFeatureResult;
     }
 
     // Fallback check
@@ -155,17 +205,14 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       hasPerm = user.features[requiredFeature as keyof typeof user.features] === true;
     }
 
-    if (!hasPerm) {
-      console.log('🔴 [RequireRole] Feature permission not met:', {
-        requiredFeature,
-        requiredPermission,
-        isSuperAdmin,
-        userFeatures: user?.features
-      });
-    }
+    console.log('🔍 [RequireRole] Feature permission check:', {
+      requiredFeature,
+      hasPerm,
+      userFeatures: user?.features
+    });
 
     return hasPerm;
-  }, [requiredFeature, requiredPermission, isSuperAdmin, user, hasFeature]);
+  }, [requiredFeature, isSuperAdmin, user, hasFeature]);
 
   // ✅ Permission action check
   const hasRequiredActionPermission = useCallback((): boolean => {
@@ -178,10 +225,17 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
     // Use the canPerform method from AuthContext
     if (canPerform && typeof canPerform === 'function') {
-      return canPerform(requiredPermission);
+      const canPerformResult = canPerform(requiredPermission);
+      console.log('🔍 [RequireRole] AuthContext canPerform result:', {
+        requiredPermission,
+        result: canPerformResult
+      });
+      return canPerformResult;
     }
 
     // Fallback permission check
+    const userRole = getUserRole();
+    
     const rolePermissions = {
       'superadmin': ['view', 'create', 'edit', 'delete', 'export', 'manage', 'approve'],
       'manager': ['view', 'create', 'edit', 'export', 'manage', 'approve'],
@@ -191,21 +245,18 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       'user': ['view']
     };
 
-    const userRole = normalizeRole(user?.role || 'user');
     const permissions = rolePermissions[userRole] || ['view'];
     const hasAction = permissions.includes(requiredPermission);
 
-    if (!hasAction) {
-      console.log('🔴 [RequireRole] Action permission not met:', {
-        requiredPermission,
-        userRole,
-        allowedPermissions: permissions,
-        isSuperAdmin
-      });
-    }
+    console.log('🔍 [RequireRole] Action permission check:', {
+      requiredPermission,
+      userRole,
+      allowedPermissions: permissions,
+      hasAction
+    });
 
     return hasAction;
-  }, [requiredPermission, isSuperAdmin, user, canPerform]);
+  }, [requiredPermission, isSuperAdmin, getUserRole, canPerform]);
 
   // ✅ ULTIMATE ACCESS CHECK
   const checkAccess = useCallback((): boolean => {
@@ -213,11 +264,18 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     
     try {
       console.log('🟡 [RequireRole] Starting access check:', {
-        userRole: user?.role,
+        user: user ? {
+          uid: user.uid,
+          role: user.role,
+          normalizedRole: getUserRole(),
+          features: user.features
+        } : 'No user',
         isSuperAdmin,
         allowedRoles,
         requiredFeature,
-        requiredPermission
+        requiredPermission,
+        requireOwnership,
+        ownerId
       });
 
       // Step 1: Check if auth is initialized and not loading
@@ -232,38 +290,40 @@ const RequireRole: React.FC<RequireRoleProps> = ({
         return false;
       }
 
-      console.log('🔍 [RequireRole] User details:', {
-        uid: user.uid,
-        role: user.role,
-        isSuperAdmin,
-        features: user.features
-      });
-
       // ✅ Step 3: SUPER_ADMIN ULTIMATE BYPASS - FULL SYSTEM ACCESS
       if (isSuperAdmin) {
         console.log('🔵 [RequireRole] SUPER_ADMIN ULTIMATE ACCESS GRANTED');
         return true;
       }
 
-      // ❌ Step 4: STRICT role requirement for non-SUPER_ADMIN users
+      // Step 4: Get user role for debugging
+      const userRole = getUserRole();
+      console.log('👤 [RequireRole] User role analysis:', {
+        rawRole: user.role,
+        normalizedRole: userRole,
+        allowedRoles,
+        isSuperAdmin
+      });
+
+      // ❌ Step 5: STRICT role requirement for non-SUPER_ADMIN users
       if (!hasRequiredRole()) {
         console.log('🔴 [RequireRole] Role requirement not met');
         return false;
       }
 
-      // ❌ Step 5: STRICT feature permission requirement
+      // ❌ Step 6: STRICT feature permission requirement
       if (!hasRequiredFeaturePermission()) {
         console.log('🔴 [RequireRole] Feature permission not met');
         return false;
       }
 
-      // ❌ Step 6: STRICT action permission requirement
+      // ❌ Step 7: STRICT action permission requirement
       if (!hasRequiredActionPermission()) {
         console.log('🔴 [RequireRole] Action permission not met');
         return false;
       }
 
-      // ❌ Step 7: STRICT ownership requirement
+      // ❌ Step 8: STRICT ownership requirement
       if (requireOwnership && !hasOwnership()) {
         console.log('🔴 [RequireRole] Ownership requirement not met');
         return false;
@@ -286,6 +346,7 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     isAuthenticated, 
     user, 
     isSuperAdmin, 
+    getUserRole,
     hasRequiredRole, 
     hasRequiredFeaturePermission,
     hasRequiredActionPermission,
@@ -293,7 +354,8 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     hasOwnership,
     allowedRoles,
     requiredFeature,
-    requiredPermission
+    requiredPermission,
+    ownerId
   ]);
 
   // ✅ Optimized useEffect for access verification
@@ -339,6 +401,7 @@ const RequireRole: React.FC<RequireRoleProps> = ({
           console.log('📊 [RequireRole] Access check completed:', {
             granted: hasAccess,
             userRole: user?.role,
+            normalizedRole: getUserRole(),
             isSuperAdmin,
             allowedRoles
           });
@@ -361,7 +424,7 @@ const RequireRole: React.FC<RequireRoleProps> = ({
         setAccessGranted(false);
         setCheckError('Access verification took too long');
       }
-    }, 3000);
+    }, 5000); // Increased timeout for better debugging
 
     // Start verification when auth state changes
     if (initialized && !loading) {
@@ -370,13 +433,14 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       // Auth failed to initialize
       setAccessChecked(true);
       setAccessGranted(false);
+      setCheckError('Authentication system failed to initialize');
     }
 
     return () => {
       isMounted = false;
       clearTimeout(verificationTimeout);
     };
-  }, [initialized, loading, isAuthenticated, user, location.pathname, accessChecked, checkAccess]);
+  }, [initialized, loading, isAuthenticated, user, location.pathname, accessChecked, checkAccess, getUserRole]);
 
   // ✅ Show loading only during initial auth loading
   if (loading || !initialized) {
@@ -399,6 +463,8 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   // ✅ Show access checking state
   if (!accessChecked && initialized && !loading) {
+    const userRole = getUserRole();
+    
     return (
       <Box
         display="flex"
@@ -413,18 +479,25 @@ const RequireRole: React.FC<RequireRoleProps> = ({
           جاري التحقق من الصلاحيات...
         </Typography>
         <Typography variant="body2" color="textSecondary">
-          {user?.role && `الدور: ${user.role}`}
+          {user?.role && `الدور: ${user.role} (${userRole})`}
           {isSuperAdmin && ' (مدير النظام - صلاحيات كاملة)'}
         </Typography>
         <Typography variant="body2" color="textSecondary">
           المطلوب: {allowedRoles.join(' أو ')}
         </Typography>
+        {requiredFeature && (
+          <Typography variant="body2" color="textSecondary">
+            الميزة المطلوبة: {requiredFeature}
+          </Typography>
+        )}
       </Box>
     );
   }
 
   // ✅ Handle check errors
   if (checkError) {
+    const userRole = getUserRole();
+    
     return (
       <Box
         display="flex"
@@ -450,7 +523,10 @@ const RequireRole: React.FC<RequireRoleProps> = ({
               <strong>تفاصيل المستخدم:</strong>
             </Typography>
             <Typography variant="body2">
-              الدور: {user?.role || 'غير معروف'}
+              الدور الخام: {user?.role || 'غير معروف'}
+            </Typography>
+            <Typography variant="body2">
+              الدور المعياري: {userRole}
             </Typography>
             <Typography variant="body2">
               SUPER_ADMIN: {isSuperAdmin ? 'نعم - صلاحيات كاملة' : 'لا - صلاحيات محدودة'}
@@ -461,6 +537,11 @@ const RequireRole: React.FC<RequireRoleProps> = ({
             <Typography variant="body2">
               الأدوار المسموحة: {allowedRoles.join(', ')}
             </Typography>
+            {requiredFeature && (
+              <Typography variant="body2">
+                الميزة المطلوبة: {requiredFeature}
+              </Typography>
+            )}
           </Box>
         </Alert>
       </Box>
@@ -469,8 +550,10 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   // ✅ ACCESS GRANTED - render protected content
   if (accessGranted) {
+    const userRole = getUserRole();
     console.log('🟢 [RequireRole] Rendering protected content for:', {
-      role: user?.role,
+      rawRole: user?.role,
+      normalizedRole: userRole,
       isSuperAdmin,
       allowedRoles
     });
@@ -479,7 +562,7 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   // ✅ ACCESS DENIED - handle different denial reasons
   if (user && isAuthenticated) {
-    // User is authenticated but access was denied
+    const userRole = getUserRole();
     
     // SUPER_ADMIN should never reach here, but handle just in case
     if (isSuperAdmin) {
@@ -492,6 +575,7 @@ const RequireRole: React.FC<RequireRoleProps> = ({
             reason: 'super_admin_error',
             message: 'خطأ في نظام الصلاحيات لمدير النظام',
             userRole: user.role,
+            normalizedRole: userRole,
             allowedRoles
           }} 
           replace 
@@ -511,10 +595,23 @@ const RequireRole: React.FC<RequireRoleProps> = ({
       actionDenied,
       ownershipDenied,
       userRole: user.role,
+      normalizedRole: userRole,
       allowedRoles,
       requiredFeature,
       requiredPermission
     });
+
+    // Build appropriate error message
+    let errorMessage = 'غير مصرح بالوصول';
+    if (roleDenied) {
+      errorMessage = `لا تمتلك الصلاحية الكافية. دورك الحالي: ${user.role} (${userRole})، المطلوب: ${allowedRoles.join(' أو ')}`;
+    } else if (featureDenied) {
+      errorMessage = `لا تمتلك صلاحية الوصول للميزة: ${requiredFeature}`;
+    } else if (actionDenied) {
+      errorMessage = `لا تمتلك صلاحية ${requiredPermission} لهذا العنصر`;
+    } else if (ownershipDenied) {
+      errorMessage = 'لا تمتلك صلاحية التعديل على هذا العنصر';
+    }
 
     return (
       <Navigate 
@@ -526,14 +623,11 @@ const RequireRole: React.FC<RequireRoleProps> = ({
                   actionDenied ? 'insufficient_permission' :
                   ownershipDenied ? 'insufficient_ownership' : 'unknown',
           userRole: user.role,
+          normalizedRole: userRole,
           allowedRoles: allowedRoles,
           requiredFeature,
           requiredPermission,
-          message: roleDenied ? `لا تمتلك الصلاحية الكافية. دورك الحالي: ${user.role}، المطلوب: ${allowedRoles.join(' أو ')}` :
-                    featureDenied ? `لا تمتلك صلاحية الوصول للميزة: ${requiredFeature}` :
-                    actionDenied ? `لا تمتلك صلاحية ${requiredPermission} لهذا العنصر` :
-                    ownershipDenied ? 'لا تمتلك صلاحية التعديل على هذا العنصر' :
-                    'غير مصرح بالوصول'
+          message: errorMessage
         }} 
         replace 
       />
