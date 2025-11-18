@@ -237,9 +237,22 @@ const LoginPage: React.FC = () => {
               initial={{ scale: 0, rotate: -180 }}
               animate={{ scale: 1, rotate: 0 }}
               transition={{ type: "spring", stiffness: 100, damping: 15 }}
-              className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg border-4 border-white dark:border-gray-800"
+              className="relative w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg border-4 border-white dark:border-gray-800 overflow-hidden"
             >
-              <span className="text-white font-bold text-lg">LOGO</span>
+              <img
+                src="/logo.png"
+                alt="Logo"
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  // Fallback if logo doesn't exist
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = 'none';
+                  const parent = target.parentElement;
+                  if (parent) {
+                    parent.innerHTML = '<span class="text-white font-bold text-lg">LOGO</span>';
+                  }
+                }}
+              />
             </motion.div>
           </div>
 
