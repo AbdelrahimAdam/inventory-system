@@ -19,7 +19,8 @@ import {
   CheckCircle,
   Settings
 } from 'lucide-react';
-import { getFirestore } from '../../../../firebase/config';
+import { db } from '@/firebase/config';
+
 import { 
   collection, 
   doc, 

@@ -1,1428 +1,1020 @@
-import React, { useEffect, useState, useMemo, useRef, Component, useCallback, lazy, Suspense } from "react";
-import { FileText, PlusCircle, Search, X, Menu, ChevronDown, ChevronUp, Edit, Trash2, Eye, Download, RotateCcw } from "lucide-react";
-import { FaWhatsapp } from "react-icons/fa";
-import { Card, CardContent, CardHeader, CardTitle } from "@/features/roles/manager/ui/card";
-import { Button } from "@/features/roles/manager/ui/Button";
-import { Input } from "@/features/roles/manager/ui/Input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/features/roles/manager/ui/Dialog";
-
-// Firebase imports - only what's needed
-import { 
-  collection, 
-  query, 
-  orderBy, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import {
+  Plus,
+  Download,
+  Moon,
+  Sun,
+  Search,
+  RefreshCw,
+  Printer,
+  X,
+  Save,
+  CheckCircle,
+  XCircle,
+  Edit,
+  Trash2,
+  Package,
+  Database,
+  TrendingUp,
+  TrendingDown,
+  BarChart3,
+  Users,
+  PackageCheck,
+  MapPin,
+  Filter,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Calendar as LucideCalendar,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  orderBy,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
   getDocs,
-  getDoc,
-  Timestamp 
+  Timestamp,
 } from 'firebase/firestore';
 import { db } from '@/services/firebase';
+import * as XLSX from 'xlsx';
 
-// Error Boundary Component
-class InvoiceErrorBoundary extends Component {
-  state = { hasError: false, error: null };
+// ─────────────────────────────────────────────────────────────────────────────
+//  ClassName helper
+// ─────────────────────────────────────────────────────────────────────────────
+const cn = (...classes) => classes.filter(Boolean).join(' ');
 
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+//  UI Components - Responsive & Consistent Typography
+// ─────────────────────────────────────────────────────────────────────────────
+const Card = ({ className, children, ...props }) => (
+  <div
+    className={cn(
+      "bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden",
+      className
+    )}
+    {...props}
+  >
+    {children}
+  </div>
+);
+const CardHeader = ({ children, className }) => (
+  <div className={cn("p-4 sm:p-5 border-b border-gray-200 dark:border-gray-700", className)}>
+    {children}
+  </div>
+);
+const CardTitle = ({ children }) => (
+  <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2 sm:gap-3">
+    {children}
+  </h2>
+);
+const CardContent = ({ children, className }) => (
+  <div className={cn("p-4 sm:p-5", className)}>
+    {children}
+  </div>
+);
+const Button = ({ onClick, children, variant = "default", className, loading, ...props }) => (
+  <button
+    onClick={onClick}
+    disabled={loading}
+    className={cn(
+      "px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl transition-all duration-300 font-bold flex items-center justify-center gap-2 sm:gap-3 shadow-md hover:shadow-lg transform hover:scale-105 active:scale-95 text-sm sm:text-base min-h-[44px]",
+      variant === "default" && "bg-purple-600 text-white hover:bg-purple-700",
+      variant === "outline" && "border-2 border-purple-300 dark:border-purple-600 bg-white dark:bg-gray-800 text-purple-700 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20",
+      variant === "red" && "bg-red-600 text-white hover:bg-red-700",
+      variant === "green" && "bg-emerald-600 text-white hover:bg-emerald-700",
+      variant === "blue" && "bg-blue-600 text-white hover:bg-blue-700",
+      loading && 'opacity-70 cursor-not-allowed',
+      className
+    )}
+    {...props}
+  >
+    {loading && <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />}
+    {children}
+  </button>
+);
 
-  componentDidCatch(error, errorInfo) {
-    console.error('Invoice Error:', error, errorInfo);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="text-center text-red-500 dark:text-red-400 p-4">
-          <p>حدث خطأ: {this.state.error.message}</p>
-          <Button
-            onClick={() => window.location.reload()}
-            className="mt-4 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
-          >
-            إعادة تحميل
-          </Button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// Optimized utility functions
-const parseNumber = (v) => {
-  if (v === null || v === undefined || v === '') return 0;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-};
-
-const formatCurrency = (number) => {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(parseNumber(number));
-};
-
-const formatDate = (date) => {
-  if (!date) return 'غير متوفر';
-  const parsedDate = date.toDate ? date.toDate() : new Date(date);
-  if (isNaN(parsedDate.getTime())) return 'تاريخ غير صالح';
-  
-  // Cache date formatting for better performance
-  const day = parsedDate.getDate().toString().padStart(2, '0');
-  const month = (parsedDate.getMonth() + 1).toString().padStart(2, '0');
-  const year = parsedDate.getFullYear();
-  
-  return `${day}/${month}/${year}`;
-};
-
-// Memoized invoice type mapping
-const invoiceTypeMap = {
-  'SALE': 'بيع',
-  'PURCHASE': 'شراء',
-  'FACTORY_DISPATCH': 'صرف المصنع',
-  'FACTORY_RETURN': 'مرتجع المصنع'
-};
-
-const getInvoiceTypeDisplay = (type) => invoiceTypeMap[type] || type;
-
-// Invoice Print Component - Now included in the same file
-const InvoicePrint = React.memo(({ invoice }) => {
-  if (!invoice) return <div>لا توجد بيانات للفاتورة</div>;
-
-  const totalAmount = invoice.details?.reduce((sum, item) => {
-    return sum + (parseNumber(item.quantity) * parseNumber(item.unit_price || 0));
-  }, 0) || 0;
-
+// ─────────────────────────────────────────────────────────────────────────────
+//  Input - Responsive & Consistent
+// ─────────────────────────────────────────────────────────────────────────────
+const Input = memo(({
+  placeholder,
+  value,
+  onChange,
+  type = 'text',
+  className = '',
+  name,
+  onKeyDown,
+  inputRef,
+  icon,
+  ...props
+}) => {
   return (
-    <div className="print-content bg-white p-6 rounded-lg shadow-lg">
-      <div className="text-center mb-6 border-b pb-4">
-        <h1 className="text-2xl font-bold text-gray-800">
-          {invoice.invoice_type === 'FACTORY_DISPATCH' ? 'إذن تسليم زجاج' : 'فاتورة'}
-        </h1>
-        <p className="text-lg text-gray-600">رقم: {invoice.invoice_number || 'غير متوفر'}</p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div>
-          <p><strong>التاريخ:</strong> {formatDate(invoice.created_at)}</p>
-          <p><strong>أنشأها:</strong> {invoice.created_by_username || 'غير متوفر'}</p>
-        </div>
-        <div>
-          {invoice.invoice_type === 'SALE' && (
-            <>
-              <p><strong>العميل:</strong> {invoice.client_name || 'غير متوفر'}</p>
-              <p><strong>هاتف العميل:</strong> {invoice.client_phone || 'غير متوفر'}</p>
-            </>
-          )}
-          {invoice.invoice_type === 'PURCHASE' && (
-            <p><strong>المورد:</strong> {invoice.supplier_name || 'غير متوفر'}</p>
-          )}
-          {invoice.invoice_type === 'FACTORY_DISPATCH' && (
-            <p><strong>منصرف إلى:</strong> {invoice.recipient || 'غير متوفر'}</p>
-          )}
-        </div>
-      </div>
-
-      {invoice.details && invoice.details.length > 0 ? (
-        <div className="mb-6">
-          <h3 className="text-lg font-semibold mb-3">الأصناف:</h3>
-          <table className="w-full border-collapse border border-gray-300">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="border border-gray-300 p-2">#</th>
-                <th className="border border-gray-300 p-2">اسم الصنف</th>
-                <th className="border border-gray-300 p-2">الكود</th>
-                <th className="border border-gray-300 p-2">اللون</th>
-                <th className="border border-gray-300 p-2">الكمية</th>
-                {invoice.invoice_type !== 'FACTORY_DISPATCH' && (
-                  <th className="border border-gray-300 p-2">سعر الوحدة</th>
-                )}
-                {invoice.invoice_type !== 'FACTORY_DISPATCH' && (
-                  <th className="border border-gray-300 p-2">الإجمالي</th>
-                )}
-                <th className="border border-gray-300 p-2">ملاحظات</th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoice.details.map((item, index) => (
-                <tr key={index}>
-                  <td className="border border-gray-300 p-2 text-center">{index + 1}</td>
-                  <td className="border border-gray-300 p-2">{item.item_name || '-'}</td>
-                  <td className="border border-gray-300 p-2">{item.item_code || '-'}</td>
-                  <td className="border border-gray-300 p-2">{item.color || '-'}</td>
-                  <td className="border border-gray-300 p-2 text-center">{item.quantity || 0}</td>
-                  {invoice.invoice_type !== 'FACTORY_DISPATCH' && (
-                    <td className="border border-gray-300 p-2 text-center">
-                      {formatCurrency(item.unit_price || 0)} جنيه
-                    </td>
-                  )}
-                  {invoice.invoice_type !== 'FACTORY_DISPATCH' && (
-                    <td className="border border-gray-300 p-2 text-center">
-                      {formatCurrency(parseNumber(item.quantity) * parseNumber(item.unit_price || 0))} جنيه
-                    </td>
-                  )}
-                  <td className="border border-gray-300 p-2">{item.notes || '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="text-center text-gray-500 mb-6">لا توجد أصناف في هذه الفاتورة</p>
-      )}
-
-      {invoice.invoice_type !== 'FACTORY_DISPATCH' && (
-        <div className="text-left mb-4">
-          <p className="text-lg font-bold">
-            الإجمالي الكلي: {formatCurrency(totalAmount)} جنيه
-          </p>
+    <div className="relative w-full">
+      {icon && (
+        <div className="absolute right-3 sm:right-4 top-1/2 transform -translate-y-1/2 text-purple-600 z-10">
+          {React.cloneElement(icon, { className: "w-4 h-4 sm:w-5 sm:h-5" })}
         </div>
       )}
-
-      {invoice.notes && (
-        <div className="mt-4 p-3 bg-gray-50 rounded">
-          <strong>ملاحظات:</strong> {invoice.notes}
-        </div>
-      )}
-
-      <div className="text-center mt-8 pt-4 border-t">
-        <p className="text-sm text-gray-500">شكراً لتعاملكم معنا</p>
-      </div>
+      <input
+        type={type}
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        name={name}
+        ref={inputRef}
+        onKeyDown={onKeyDown}
+        className={cn(
+          "p-3 sm:p-4 rounded-xl border-2 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white w-full focus:border-purple-600 focus:ring-4 focus:ring-purple-600/20 transition-all duration-300 text-base font-medium placeholder-gray-400 dark:placeholder-gray-500",
+          icon && "pr-10 sm:pr-12",
+          className
+        )}
+        {...props}
+      />
     </div>
   );
 });
+Input.displayName = 'Input';
 
-InvoicePrint.displayName = 'InvoicePrint';
-
-// Create Invoice Form Component - Now included in the same file
-const CreateInvoiceForm = React.memo(({ 
-  clients, 
-  suppliers, 
-  stockItems, 
-  user, 
-  onCreated, 
-  onCancel, 
-  isEdit, 
-  initialData 
-}) => {
-  const [formData, setFormData] = useState({
-    invoice_type: 'SALE',
-    client_name: '',
-    client_phone: '',
-    supplier_name: '',
-    recipient: '',
-    notes: '',
-    details: []
-  });
-  const [currentItem, setCurrentItem] = useState({
-    item_name: '',
-    item_code: '',
-    color: '',
-    quantity: '',
-    unit_price: '',
-    notes: '',
-    stock_id: ''
-  });
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (isEdit && initialData) {
-      setFormData({
-        invoice_type: initialData.invoice_type || 'SALE',
-        client_name: initialData.client_name || '',
-        client_phone: initialData.client_phone || '',
-        supplier_name: initialData.supplier_name || '',
-        recipient: initialData.recipient || '',
-        notes: initialData.notes || '',
-        details: initialData.details || []
-      });
-    }
-  }, [isEdit, initialData]);
-
-  const handleAddItem = () => {
-    if (!currentItem.item_name || !currentItem.quantity) {
-      alert('يرجى إدخال اسم الصنف والكمية');
-      return;
-    }
-
-    setFormData(prev => ({
-      ...prev,
-      details: [...prev.details, { ...currentItem }]
-    }));
-
-    setCurrentItem({
-      item_name: '',
-      item_code: '',
-      color: '',
-      quantity: '',
-      unit_price: '',
-      notes: '',
-      stock_id: ''
-    });
-  };
-
-  const handleRemoveItem = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      details: prev.details.filter((_, i) => i !== index)
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-
-    try {
-      const totalAmount = formData.details.reduce((sum, item) => {
-        return sum + (parseNumber(item.quantity) * parseNumber(item.unit_price || 0));
-      }, 0);
-
-      const invoiceData = {
-        ...formData,
-        invoice_number: isEdit ? initialData.invoice_number : `INV-${Date.now()}`,
-        total_amount: totalAmount,
-        created_by: user.id,
-        created_by_username: user.username,
-        created_at: Timestamp.now(),
-        updated_at: Timestamp.now()
-      };
-
-      if (isEdit && initialData) {
-        await updateDoc(doc(db, 'invoices', initialData.id), invoiceData);
-      } else {
-        await addDoc(collection(db, 'invoices'), invoiceData);
-      }
-
-      onCreated();
-    } catch (error) {
-      console.error('Error saving invoice:', error);
-      alert('حدث خطأ أثناء حفظ الفاتورة');
-    } finally {
-      setLoading(false);
-    }
-  };
-
+// ─────────────────────────────────────────────────────────────────────────────
+//  Checkbox - Responsive
+// ─────────────────────────────────────────────────────────────────────────────
+const Checkbox = memo(({ checked, onCheckedChange, className = '', label }) => {
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium mb-2">نوع الفاتورة</label>
-          <select
-            value={formData.invoice_type}
-            onChange={(e) => setFormData(prev => ({ ...prev, invoice_type: e.target.value }))}
-            className="w-full p-2 border rounded"
-          >
-            <option value="SALE">فاتورة بيع</option>
-            <option value="PURCHASE">فاتورة شراء</option>
-            <option value="FACTORY_DISPATCH">صرف مصنع</option>
-          </select>
-        </div>
-
-        {formData.invoice_type === 'SALE' && (
-          <>
-            <div>
-              <label className="block text-sm font-medium mb-2">اسم العميل</label>
-              <input
-                type="text"
-                value={formData.client_name}
-                onChange={(e) => setFormData(prev => ({ ...prev, client_name: e.target.value }))}
-                className="w-full p-2 border rounded"
-                placeholder="أدخل اسم العميل"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">هاتف العميل</label>
-              <input
-                type="text"
-                value={formData.client_phone}
-                onChange={(e) => setFormData(prev => ({ ...prev, client_phone: e.target.value }))}
-                className="w-full p-2 border rounded"
-                placeholder="أدخل رقم الهاتف"
-              />
-            </div>
-          </>
-        )}
-
-        {formData.invoice_type === 'PURCHASE' && (
-          <div>
-            <label className="block text-sm font-medium mb-2">اسم المورد</label>
-            <input
-              type="text"
-              value={formData.supplier_name}
-              onChange={(e) => setFormData(prev => ({ ...prev, supplier_name: e.target.value }))}
-              className="w-full p-2 border rounded"
-              placeholder="أدخل اسم المورد"
-            />
-          </div>
-        )}
-
-        {formData.invoice_type === 'FACTORY_DISPATCH' && (
-          <div>
-            <label className="block text-sm font-medium mb-2">منصرف إلى</label>
-            <input
-              type="text"
-              value={formData.recipient}
-              onChange={(e) => setFormData(prev => ({ ...prev, recipient: e.target.value }))}
-              className="w-full p-2 border rounded"
-              placeholder="أدخل اسم المستلم"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Add Items Section */}
-      <div className="border rounded-lg p-4">
-        <h3 className="text-lg font-semibold mb-4">إضافة أصناف</h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
-          <input
-            type="text"
-            value={currentItem.item_name}
-            onChange={(e) => setCurrentItem(prev => ({ ...prev, item_name: e.target.value }))}
-            placeholder="اسم الصنف"
-            className="p-2 border rounded"
-          />
-          <input
-            type="text"
-            value={currentItem.item_code}
-            onChange={(e) => setCurrentItem(prev => ({ ...prev, item_code: e.target.value }))}
-            placeholder="كود الصنف"
-            className="p-2 border rounded"
-          />
-          <input
-            type="text"
-            value={currentItem.color}
-            onChange={(e) => setCurrentItem(prev => ({ ...prev, color: e.target.value }))}
-            placeholder="اللون"
-            className="p-2 border rounded"
-          />
-          <input
-            type="number"
-            value={currentItem.quantity}
-            onChange={(e) => setCurrentItem(prev => ({ ...prev, quantity: e.target.value }))}
-            placeholder="الكمية"
-            className="p-2 border rounded"
-          />
-          {formData.invoice_type !== 'FACTORY_DISPATCH' && (
-            <input
-              type="number"
-              value={currentItem.unit_price}
-              onChange={(e) => setCurrentItem(prev => ({ ...prev, unit_price: e.target.value }))}
-              placeholder="سعر الوحدة"
-              className="p-2 border rounded"
-            />
-          )}
-          <input
-            type="text"
-            value={currentItem.notes}
-            onChange={(e) => setCurrentItem(prev => ({ ...prev, notes: e.target.value }))}
-            placeholder="ملاحظات"
-            className="p-2 border rounded"
-          />
-        </div>
-
-        <Button
-          type="button"
-          onClick={handleAddItem}
-          className="bg-blue-500 hover:bg-blue-600"
-        >
-          إضافة صنف
-        </Button>
-      </div>
-
-      {/* Items List */}
-      {formData.details.length > 0 && (
-        <div className="border rounded-lg p-4">
-          <h3 className="text-lg font-semibold mb-4">الأصناف المضافة</h3>
-          <div className="space-y-2">
-            {formData.details.map((item, index) => (
-              <div key={index} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                <span>{item.item_name} - {item.quantity} قطعة</span>
-                <Button
-                  type="button"
-                  onClick={() => handleRemoveItem(index)}
-                  className="bg-red-500 hover:bg-red-600 text-white p-1"
-                >
-                  حذف
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div>
-        <label className="block text-sm font-medium mb-2">ملاحظات</label>
-        <textarea
-          value={formData.notes}
-          onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-          className="w-full p-2 border rounded"
-          rows="3"
-          placeholder="أدخل أي ملاحظات إضافية"
+    <label className={cn("flex items-center gap-2 sm:gap-3 cursor-pointer group p-2 sm:p-3 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-xl transition-all duration-300 text-sm sm:text-base font-medium", className)}>
+      <div className="relative">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onCheckedChange(e.target.checked)}
+          className="w-4 h-4 sm:w-5 sm:h-5 text-purple-600 bg-gray-100 border-gray-300 rounded-lg focus:ring-purple-500 dark:focus:ring-purple-600 focus:ring-2 opacity-0 absolute"
         />
+        <div className={cn(
+          "w-4 h-4 sm:w-5 sm:h-5 border-2 rounded-lg transition-all duration-200 flex items-center justify-center shadow-inner",
+          checked
+            ? 'bg-purple-600 border-purple-600 shadow-lg'
+            : 'bg-white border-gray-400 dark:bg-gray-700 dark:border-gray-500 group-hover:border-purple-500'
+        )}>
+          {checked && (
+            <svg className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+        </div>
       </div>
-
-      <div className="flex gap-3">
-        <Button
-          type="submit"
-          disabled={loading}
-          className="flex-1 bg-green-500 hover:bg-green-600"
-        >
-          {loading ? 'جاري الحفظ...' : (isEdit ? 'تحديث الفاتورة' : 'إنشاء الفاتورة')}
-        </Button>
-        <Button
-          type="button"
-          onClick={onCancel}
-          className="flex-1 bg-gray-500 hover:bg-gray-600"
-        >
-          إلغاء
-        </Button>
-      </div>
-    </form>
+      <span className="text-gray-900 dark:text-white select-none">
+        {label}
+      </span>
+    </label>
   );
 });
+Checkbox.displayName = 'Checkbox';
 
-CreateInvoiceForm.displayName = 'CreateInvoiceForm';
+// ─────────────────────────────────────────────────────────────────────────────
+//  StatCard - Responsive
+// ─────────────────────────────────────────────────────────────────────────────
+const StatCard = ({ title, value, icon, color, loading = false }) => (
+  <motion.div
+    className={cn(
+      "rounded-2xl p-4 sm:p-5 text-white shadow-lg flex flex-col justify-between h-24 sm:h-28",
+      color
+    )}
+    whileHover={{ y: -4, scale: 1.03 }}
+    transition={{ type: "spring", stiffness: 300 }}
+  >
+    <div className="flex items-center justify-between">
+      <h3 className="text-sm sm:text-base font-bold opacity-90">{title}</h3>
+      <div className="w-8 h-8 sm:w-10 sm:h-10 bg-white/20 rounded-xl flex items-center justify-center shadow-lg">
+        {React.cloneElement(icon, { className: "w-5 h-5 sm:w-6 sm:h-6" })}
+      </div>
+    </div>
+    {loading ? (
+      <div className="flex items-center gap-2 mt-2">
+        <div className="w-4 h-4 sm:w-5 sm:h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-base sm:text-lg font-bold">...</p>
+      </div>
+    ) : (
+      <p className="text-lg sm:text-2xl font-bold mt-1 sm:mt-2">{value?.toLocaleString() ?? "0"}</p>
+    )}
+  </motion.div>
+);
 
-// Factory Return Dialog Component - Optimized
-const FactoryReturnDialog = React.memo(({ invoice, user, onSuccess, onCancel }) => {
-  const [returnType, setReturnType] = useState('زجاج فقط');
-  const [notes, setNotes] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = useCallback(async () => {
-    if (!invoice?.id || !user?.id) {
-      setError('بيانات غير صالحة');
-      return;
+// ─────────────────────────────────────────────────────────────────────────────
+//  FilterSection - Fully Responsive
+// ─────────────────────────────────────────────────────────────────────────────
+const FilterSection = memo(({
+  filters,
+  exportColumns,
+  setExportColumns,
+  onApply,
+  onReset,
+  currentTime,
+  toggleDarkMode,
+  darkMode,
+  isLoading,
+  onExportToExcel,
+  onPrint,
+  isExpanded,
+  onToggle
+}: any) => {
+  const initialFilters = { item_name: '', item_code: '', color: '', supplier: '', location: '', from_date: '', to_date: '' };
+  const [localFilters, setLocalFilters] = useState(filters);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  useEffect(() => setLocalFilters(filters), [filters]);
+  const handleFilterChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setLocalFilters(prev => ({ ...prev, [name]: value }));
+  }, []);
+  const handleApply = () => onApply(localFilters);
+  const handleLocalReset = () => { setLocalFilters(initialFilters); onReset(); };
+  const handleFilterKeyDown = useCallback((e: React.KeyboardEvent, fieldName: string) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const fields = ['item_name', 'item_code', 'color', 'supplier', 'location', 'from_date', 'to_date'];
+      const idx = fields.indexOf(fieldName);
+      if (idx < fields.length - 1) {
+        inputRefs.current[fields[idx + 1]]?.focus();
+      } else {
+        handleApply();
+      }
     }
-
-    setSubmitting(true);
-    setError('');
-
-    try {
-      const returnInvoiceNumber = `RET-${invoice.invoice_number}-${Date.now()}`;
-      
-      const returnInvoiceData = {
-        invoice_number: returnInvoiceNumber,
-        invoice_type: 'FACTORY_RETURN',
-        original_invoice_id: invoice.id,
-        original_invoice_number: invoice.invoice_number,
-        return_type: returnType,
-        recipient: invoice.recipient,
-        details: invoice.details,
-        notes: notes || undefined,
-        created_by: user.id,
-        created_by_username: user.username,
-        created_at: Timestamp.now(),
-        total_amount: 0
-      };
-
-      await addDoc(collection(db, 'invoices'), returnInvoiceData);
-
-      // Batch stock updates
-      const updatePromises = invoice.details.map(async (detail) => {
-        if (detail.stock_id) {
-          const stockRef = doc(db, 'warehouseItems', detail.stock_id);
-          try {
-            const stockDoc = await getDoc(stockRef);
-            if (stockDoc.exists()) {
-              const stockData = stockDoc.data();
-              const newQuantity = (stockData.remaining_quantity || 0) + parseNumber(detail.quantity);
-              await updateDoc(stockRef, {
-                remaining_quantity: newQuantity,
-                updatedAt: Timestamp.now()
-              });
-            }
-          } catch (stockErr) {
-            console.error('Error updating stock for return:', stockErr);
-          }
-        }
-      });
-
-      await Promise.all(updatePromises);
-
-      onSuccess({
-        success: true,
-        return_invoice_number: returnInvoiceNumber,
-        message: 'تم معالجة مرتجع المصنع بنجاح'
-      });
-    } catch (err) {
-      console.error('Factory return error:', err);
-      setError(err.message || 'حدث خطأ أثناء معالجة المرتجع');
-    } finally {
-      setSubmitting(false);
-    }
-  }, [invoice, user, returnType, notes, onSuccess]);
-
+  }, [handleApply]);
+  const filterFields = [
+    { label: 'الصنف', key: 'item_name', icon: <Package /> },
+    { label: 'الكود', key: 'item_code', icon: <Database /> },
+    { label: 'اللون', key: 'color', icon: <div className="w-5 h-5 rounded-full bg-purple-600" /> },
+    { label: 'المورد', key: 'supplier', icon: <Users /> },
+    { label: 'مكان الصنف', key: 'location', icon: <MapPin /> },
+    { label: 'من تاريخ', key: 'from_date', type: 'date', icon: <LucideCalendar /> },
+    { label: 'إلى تاريخ', key: 'to_date', type: 'date', icon: <LucideCalendar /> },
+  ];
+  const exportCheckboxes = [
+    { key: 'item_name', label: 'الصنف' },
+    { key: 'item_code', label: 'الكود' },
+    { key: 'color', label: 'اللون' },
+    { key: 'cartons_count', label: 'الكراتين' },
+    { key: 'bottles_per_carton', label: 'في الكرتونة' },
+    { key: 'single_bottles', label: 'الفردي' },
+    { key: 'supplier', label: 'المورد' },
+    { key: 'location', label: 'مكان الصنف' },
+    { key: 'notes', label: 'ملاحظات' },
+    { key: 'createdAt', label: 'التاريخ' },
+    { key: 'added_quantity', label: 'المضافة' },
+    { key: 'remaining_quantity', label: 'المتبقية' },
+  ];
   return (
-    <Dialog open={true} onOpenChange={onCancel}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="text-lg font-bold text-gray-800 dark:text-white">
-            مرتجع صرف المصنع
-          </DialogTitle>
-          <DialogDescription>
-            معالجة مرتجع لفاتورة صرف المصنع رقم: {invoice?.invoice_number}
-          </DialogDescription>
-        </DialogHeader>
-       
-        <div className="space-y-4">
-          {error && (
-            <div className="text-sm text-red-600 p-2 bg-red-50 rounded-md">
-              {error}
+    <Card className="mb-4">
+      <CardContent className="p-4 sm:p-5">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+          <Button onClick={onToggle} variant="outline" className="w-full sm:w-auto text-sm sm:text-base py-2 px-3 sm:px-4">
+            <Filter className="w-4 h-4 sm:w-5 sm:h-5" />
+            {isExpanded ? 'إخفاء الفلتر' : 'عرض الفلتر'}
+            {isExpanded ? <ChevronUp className="w-4 h-4 sm:w-5 sm:h-5" /> : <ChevronDown className="w-4 h-4 sm:w-5 sm:h-5" />}
+          </Button>
+          <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto justify-between sm:justify-end">
+            <div className="bg-purple-100 dark:bg-purple-900/30 rounded-xl px-3 sm:px-4 py-1.5 sm:py-2 border border-purple-300 dark:border-purple-700 text-center flex-1 sm:flex-initial">
+              <p className="text-sm sm:text-base font-bold text-purple-800 dark:text-purple-300">{currentTime}</p>
             </div>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              نوع المرتجع
-            </label>
-            <select
-              value={returnType}
-              onChange={(e) => setReturnType(e.target.value)}
-              className="p-2 border rounded w-full bg-white dark:bg-gray-700 text-gray-800 dark:text-white"
-            >
-              <option value="زجاج فقط">زجاج فقط</option>
-              <option value="زجاج مع الإكسسوارات">زجاج مع الإكسسوارات</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              ملاحظات المرتجع
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="أدخل ملاحظات المرتجع (اختياري)"
-              className="p-2 border rounded w-full bg-white dark:bg-gray-700 text-gray-800 dark:text-white"
-              rows={3}
-            />
-          </div>
-          <div className="flex gap-3">
-            <Button
-              onClick={handleSubmit}
-              disabled={submitting}
-              className="flex-1 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
-            >
-              {submitting ? 'جاري المعالجة...' : 'معالجة المرتجع'}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={onCancel}
-              className="flex-1 border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-            >
-              إلغاء
+            <Button onClick={toggleDarkMode} variant="outline" className="p-2 sm:p-3 rounded-xl">
+              {darkMode ? <Sun className="w-4 h-4 sm:w-5 sm:h-5" /> : <Moon className="w-4 h-4 sm:w-5 sm:h-5" />}
             </Button>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.3 }}
+              className="overflow-hidden"
+            >
+              <div className="space-y-4 sm:space-y-5 border-t border-gray-200 dark:border-gray-700 pt-4 sm:pt-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+                  {filterFields.map(f => (
+                    <div key={f.key} className="flex flex-col gap-1.5 sm:gap-2">
+                      <label className="text-sm sm:text-base font-bold text-gray-900 dark:text-white">{f.label}</label>
+                      <Input
+                        type={f.type || 'text'}
+                        value={localFilters[f.key]}
+                        onChange={handleFilterChange}
+                        name={f.key}
+                        onKeyDown={(e: any) => handleFilterKeyDown(e, f.key)}
+                        inputRef={el => (inputRefs.current[f.key] = el)}
+                        placeholder={f.label}
+                        icon={f.icon}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="border-t border-gray-200 dark:border-gray-700 pt-3 sm:pt-4">
+                  <h3 className="text-sm sm:text-base font-bold text-gray-900 dark:text-white mb-2 sm:mb-3 flex items-center gap-2">
+                    <Download className="w-4 h-4 sm:w-5 sm:h-5" /> أعمدة التصدير
+                  </h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2 sm:gap-3">
+                    {exportCheckboxes.map(({ key, label }) => (
+                      <Checkbox
+                        key={key}
+                        checked={exportColumns[key]}
+                        onCheckedChange={checked => setExportColumns({ ...exportColumns, [key]: checked })}
+                        label={label}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 sm:gap-3">
+                  <Button onClick={handleApply} disabled={isLoading} className="flex-1 sm:flex-initial">
+                    <Search className="w-4 h-4 sm:w-5 sm:h-5" /> {isLoading ? 'جاري...' : 'تطبيق'}
+                  </Button>
+                  <Button onClick={handleLocalReset} variant="outline" className="flex-1 sm:flex-initial">
+                    <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5" /> إعادة
+                  </Button>
+                  <Button onClick={onExportToExcel} variant="green" disabled={isLoading} className="flex-1 sm:flex-initial">
+                    <Download className="w-4 h-4 sm:w-5 sm:h-5" /> تصدير
+                  </Button>
+                  <Button onClick={onPrint} variant="outline" className="flex-1 sm:flex-initial">
+                    <Printer className="w-4 h-4 sm:w-5 sm:h-5" /> طباعة
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </CardContent>
+    </Card>
   );
 });
+FilterSection.displayName = 'FilterSection';
 
-FactoryReturnDialog.displayName = 'FactoryReturnDialog';
+// ─────────────────────────────────────────────────────────────────────────────
+//  AddItemModal - Responsive Modal
+// ─────────────────────────────────────────────────────────────────────────────
+const AddItemModal = memo(({ isOpen, onClose, initialItem, onSave, inventoryType }: any) => {
+  if (!isOpen) return null;
+  const defaultItem = {
+    item_name: '', item_code: '', color: '', carton_quantity: '', items_per_carton: '', individual_items: '',
+    supplier: '', location: '', notes: '', total_quantity: '0', remaining_quantity: '0'
+  };
+  const [localItem, setLocalItem] = useState(initialItem || defaultItem);
+  const [saving, setSaving] = useState(false);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  useEffect(() => setLocalItem(initialItem || defaultItem), [initialItem, inventoryType]);
+  const normalizeArabic = (s: string) => s.replace(/[٠-٩]/g, c => '٠١٢٣٤٥٦٧٨٩'.indexOf(c).toString());
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setLocalItem(prev => {
+      const updated = { ...prev, [name]: value };
+      if (['carton_quantity', 'items_per_carton', 'individual_items'].includes(name)) {
+        const c = parseInt(normalizeArabic(updated.carton_quantity)) || 0;
+        const p = parseInt(normalizeArabic(updated.items_per_carton)) || 0;
+        const i = parseInt(normalizeArabic(updated.individual_items)) || 0;
+        const total = c * p + i;
+        updated.total_quantity = total.toString();
+        updated.remaining_quantity = total.toString();
+      }
+      return updated;
+    });
+  }, []);
+  const handleKeyDown = useCallback((e: React.KeyboardEvent, field: string) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const fields = ['item_name', 'item_code', 'color', 'carton_quantity', 'items_per_carton', 'individual_items', 'supplier', 'location', 'notes'];
+      const idx = fields.indexOf(field);
+      if (idx < fields.length - 1) inputRefs.current[fields[idx + 1]]?.focus();
+      else handleSave(false);
+    }
+  }, []);
+  const handleSave = async (closeAfter = false) => {
+    setSaving(true);
+    try {
+      await onSave(localItem, closeAfter);
+      if (closeAfter) onClose();
+    } catch (error) {
+      console.error('Error saving:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const getLabel = (t: string) => ({ 'main-inventory': 'المخزن الرئيسي', monofia: 'المنوفية', matbaa: 'المطبعة' }[t] || t);
+  const fields = [
+    { label: 'الصنف', name: 'item_name', required: true, icon: <Package /> },
+    { label: 'الكود', name: 'item_code', required: true, icon: <Database /> },
+    { label: 'اللون', name: 'color', required: true, icon: <div className="w-5 h-5 rounded-full bg-purple-600" /> },
+    { label: 'عدد الكراتين', name: 'carton_quantity', type: 'number', required: true, icon: <PackageCheck /> },
+    { label: 'عدد في الكرتونة', name: 'items_per_carton', type: 'number', required: true, icon: <Package /> },
+    { label: 'عدد القزاز الفردي', name: 'individual_items', type: 'number', icon: <div className="w-5 h-5 text-xs">Num</div> },
+    { label: 'المورد', name: 'supplier', icon: <Users /> },
+    { label: 'مكان الصنف', name: 'location', icon: <MapPin /> },
+    { label: 'ملاحظات', name: 'notes', isTextarea: true, icon: <div className="w-5 h-5 text-xs">Note</div> },
+  ];
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto"
+      onClick={e => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }}
+        className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg sm:max-w-2xl max-h-[95vh] flex flex-col border border-gray-200 dark:border-gray-700"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-white dark:bg-gray-800 p-4 sm:p-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center z-10 rounded-t-2xl">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="w-2 h-7 sm:h-8 bg-purple-600 rounded-full"></div>
+            <h2 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white">
+              {initialItem ? 'تعديل الصنف' : 'إضافة صنف جديد'} - {getLabel(inventoryType)}
+            </h2>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+            <X className="w-5 h-5 sm:w-6 sm:h-6" />
+          </button>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); handleSave(false); }} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3 sm:space-y-4">
+          {fields.map(f => (
+            <div key={f.name} className="flex flex-col gap-1.5">
+              <label className="text-sm sm:text-base font-bold text-gray-900 dark:text-white flex items-center gap-1.5 sm:gap-2">
+                {React.cloneElement(f.icon, { className: "w-4 h-4 sm:w-5 sm:h-5" })} {f.label} {f.required && <span className="text-red-600">*</span>}
+              </label>
+              {f.isTextarea ? (
+                <textarea
+                  name={f.name}
+                  value={localItem[f.name]}
+                  onChange={handleChange}
+                  onKeyDown={e => handleKeyDown(e, f.name)}
+                  ref={el => (inputRefs.current[f.name] = el)}
+                  className="p-3 sm:p-4 rounded-xl border-2 border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white w-full h-20 sm:h-24 text-base font-medium focus:border-purple-600 focus:ring-4 focus:ring-purple-600/20 resize-none transition-all duration-300"
+                  placeholder={f.label}
+                />
+              ) : (
+                <Input
+                  type={f.type || 'text'}
+                  name={f.name}
+                  value={localItem[f.name]}
+                  onChange={handleChange}
+                  onKeyDown={e => handleKeyDown(e, f.name)}
+                  inputRef={el => (inputRefs.current[f.name] = el)}
+                  placeholder={f.label}
+                  required={f.required}
+                  icon={React.cloneElement(f.icon, { className: "w-4 h-4 sm:w-5 sm:h-5" })}
+                />
+              )}
+            </div>
+          ))}
+        </form>
+        <div className="sticky bottom-0 bg-white dark:bg-gray-800 p-4 sm:p-5 border-t border-gray-200 dark:border-gray-700 rounded-b-2xl space-y-3">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
+            <div className="bg-purple-50 dark:bg-purple-900/20 p-3 sm:p-4 rounded-xl text-center border border-purple-300 dark:border-purple-700">
+              <span className="text-sm sm:text-base font-bold text-gray-900 dark:text-white block">الإجمالية</span>
+              <span className="text-lg sm:text-2xl font-bold text-purple-700 dark:text-purple-400">{localItem.total_quantity}</span>
+            </div>
+            <div className="bg-emerald-50 dark:bg-emerald-900/20 p-3 sm:p-4 rounded-xl text-center border border-emerald-300 dark:border-emerald-700">
+              <span className="text-sm sm:text-base font-bold text-gray-900 dark:text-white block">المتبقية</span>
+              <span className="text-lg sm:text-2xl font-bold text-emerald-700 dark:text-emerald-400">{localItem.remaining_quantity}</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
+            <Button onClick={() => handleSave(false)} loading={saving} className="w-full">
+              <Save className="w-4 h-4 sm:w-5 sm:h-5" /> {saving ? 'جاري...' : 'حفظ'}
+            </Button>
+            <Button onClick={() => handleSave(true)} variant="green" loading={saving} className="w-full">
+              <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5" /> {saving ? 'جاري...' : 'حفظ وإغلاق'}
+            </Button>
+            <Button variant="outline" onClick={onClose} className="w-full">
+              <XCircle className="w-4 h-4 sm:w-5 sm:h-5" /> إلغاء
+            </Button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+});
+AddItemModal.displayName = 'AddItemModal';
 
-// Loading components for better UX
-const LoadingSpinner = () => (
-  <div className="flex justify-center items-center py-8">
-    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-teal-500"></div>
+// ─────────────────────────────────────────────────────────────────────────────
+//  DeleteModal - Responsive
+// ─────────────────────────────────────────────────────────────────────────────
+const DeleteModal = memo(({ isOpen, onClose, onConfirm, itemName, loading }: any) => {
+  if (!isOpen) return null;
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm">
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-md p-5 sm:p-6 border border-gray-200 dark:border-gray-700">
+        <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4">
+          <div className="w-10 h-10 sm:w-12 sm:h-12 bg-red-600 rounded-xl flex items-center justify-center shadow-lg">
+            <Trash2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+          </div>
+          <h3 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white">تأكيد الحذف</h3>
+        </div>
+        <p className="text-gray-700 dark:text-gray-300 mb-5 sm:mb-6 leading-relaxed text-sm sm:text-base">
+          هل أنت متأكد من حذف الصنف <span className="font-bold text-gray-900 dark:text-white">"{itemName}"</span>؟ هذا الإجراء لا يمكن التراجع عنه.
+        </p>
+        <div className="flex gap-2 sm:gap-3 justify-end">
+          <Button variant="outline" onClick={onClose} disabled={loading} className="text-sm sm:text-base py-2 px-4">إلغاء</Button>
+          <Button variant="red" onClick={onConfirm} loading={loading} className="text-sm sm:text-base py-2 px-4 gap-2">
+            <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" /> {loading ? 'جاري...' : 'حذف'}
+          </Button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+});
+DeleteModal.displayName = 'DeleteModal';
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DataTable - Responsive Table
+// ─────────────────────────────────────────────────────────────────────────────
+const DataTable = ({ columns, data, isLoading, emptyMessage, onEdit, onDelete, showActions = false }) => (
+  <div className="w-full overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
+    {isLoading ? (
+      <div className="flex flex-col items-center justify-center py-10 sm:py-12">
+        <div className="w-10 h-10 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-3"></div>
+        <p className="text-base sm:text-lg font-medium text-gray-600">جاري التحميل...</p>
+      </div>
+    ) : !data || data.length === 0 ? (
+      <div className="flex flex-col items-center justify-center py-10 sm:py-12 text-gray-500">
+        <Database className="w-12 h-12 sm:w-16 sm:h-16 opacity-50 mb-3" />
+        <p className="text-base sm:text-lg font-medium">{emptyMessage}</p>
+      </div>
+    ) : (
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[800px] text-right border-collapse">
+          <thead>
+            <tr className="bg-purple-600 text-white">
+              {columns.map((col) => (
+                <th key={col.accessorKey} className="px-3 py-3 sm:px-5 sm:py-4 text-sm sm:text-base font-bold border-b-2 border-purple-700">
+                  {col.header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row, idx) => (
+              <motion.tr
+                key={row.id || idx}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: idx * 0.02 }}
+                className="border-b border-gray-200 dark:border-gray-700 hover:bg-purple-50 dark:hover:bg-purple-900/10 transition-all duration-200 group"
+              >
+                {columns.map((col) => (
+                  <td
+                    key={col.accessorKey}
+                    className={cn(
+                      "px-3 py-3 sm:px-5 sm:py-4 text-sm sm:text-base font-medium transition-all duration-200 group-hover:bg-purple-50 dark:group-hover:bg-purple-900/10",
+                      col.accessorKey === 'actions' && "text-center"
+                    )}
+                  >
+                    {col.accessorKey === 'actions' && showActions ? (
+                      <div className="flex gap-1 sm:gap-2 justify-center">
+                        <button onClick={() => onEdit(row)} className="p-1.5 sm:p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-md">
+                          <Edit className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                        <button onClick={(e) => onDelete(row, e)} className="p-1.5 sm:p-2 rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors shadow-md">
+                          <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      </div>
+                    ) : col.accessorKey === 'remaining_quantity' ? (
+                      <div className={cn(
+                        "px-2 py-1 sm:px-3 sm:py-1.5 rounded-full text-center font-bold text-white text-xs sm:text-base",
+                        row[col.accessorKey] === 0 ? 'bg-red-600' :
+                        row[col.accessorKey] < 10 ? 'bg-amber-600' :
+                        'bg-emerald-600'
+                      )}>
+                        {row[col.accessorKey]}
+                      </div>
+                    ) : (
+                      <div className="truncate max-w-xs">{row[col.accessorKey] ?? "-"}</div>
+                    )}
+                  </td>
+                ))}
+              </motion.tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
   </div>
 );
 
-// Main Invoice System Component - Optimized
-export default function InvoiceSystemRedesign() {
-  const [invoices, setInvoices] = useState([]);
-  const [stockItems, setStockItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isClientListOpen, setIsClientListOpen] = useState(false);
-  const [clientSearch, setClientSearch] = useState("");
-  const [isReturnDialogOpen, setIsReturnDialogOpen] = useState(false);
-  const [selectedForReturn, setSelectedForReturn] = useState(null);
+// ─────────────────────────────────────────────────────────────────────────────
+//  Success Notification
+// ─────────────────────────────────────────────────────────────────────────────
+const SuccessNotification = ({ message, isVisible, onClose }) => (
+  <AnimatePresence>
+    {isVisible && (
+      <motion.div
+        initial={{ opacity: 0, y: -50, scale: 0.8 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -50, scale: 0.8 }}
+        className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-emerald-600 text-white px-4 py-3 sm:px-6 sm:py-4 rounded-2xl shadow-2xl flex items-center gap-2 sm:gap-3 backdrop-blur-md border border-emerald-500 text-sm sm:text-lg font-bold"
+      >
+        <Check className="w-5 h-5 sm:w-6 sm:h-6" />
+        <span>{message}</span>
+        <button onClick={onClose} className="p-1 rounded-full hover:bg-white/20 transition-colors">
+          <X className="w-4 h-4 sm:w-5 sm:h-5" />
+        </button>
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
 
-  // Mock user data
-  const user = useMemo(() => ({
-    id: 'manager-1',
-    username: 'المدير',
-    role: 'manager'
-  }), []);
-
-  // Debounced search
-  const debouncedQuery = useDebounce(query, 300);
-
-  // Fetch data with error handling and performance optimization
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      
-      // Parallel data fetching
-      const [invoicesSnapshot, stockSnapshot] = await Promise.all([
-        getDocs(query(collection(db, 'invoices'), orderBy('created_at', 'desc'))),
-        getDocs(query(collection(db, 'warehouseItems'), orderBy('createdAt', 'desc')))
-      ]);
-
-      const invoicesData = invoicesSnapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      }));
-
-      const stockData = stockSnapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      }));
-
-      setInvoices(invoicesData);
-      setStockItems(stockData);
-      setError(null);
-    } catch (err) {
-      console.error('Fetch Error:', err);
-      setError(err.message || "فشل في تحميل البيانات. حاول مرة أخرى لاحقًا.");
-    } finally {
-      setLoading(false);
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+//  Main Component - FULL WIDTH (NO MARGINS)
+// ─────────────────────────────────────────────────────────────────────────────
+const ViewStockPage = () => {
+  const [items, setItems] = useState([]);
+  const [formattedItems, setFormattedItems] = useState([]);
+  const [filters, setFilters] = useState({ item_name: '', item_code: '', color: '', supplier: '', location: '', from_date: '', to_date: '' });
+  const [exportColumns, setExportColumns] = useState({
+    item_name: true, item_code: true, color: true, cartons_count: true, bottles_per_carton: true, single_bottles: true,
+    supplier: true, location: true, notes: true, createdAt: true, added_quantity: true, remaining_quantity: true
+  });
+  const [currentTime, setCurrentTime] = useState('');
+  const [resultCount, setResultCount] = useState(0);
+  const [darkMode, setDarkMode] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [inventoryType, setInventoryType] = useState('main-inventory');
+  const [isFilterExpanded, setIsFilterExpanded] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [stats, setStats] = useState({ totalItems: 0, totalQuantity: 0, lowStockItems: 0, outOfStockItems: 0 });
+  const warehouseIdMap = { 'main-inventory': 'main-inventory', monofia: 'monofia', matbaa: 'matbaa' };
+  const inventoryTypes = [
+    { value: 'main-inventory', label: 'المخزن الرئيسي', color: 'bg-purple-600' },
+    { value: 'monofia', label: 'المنوفية', color: 'bg-emerald-600' },
+    { value: 'matbaa', label: 'المطبعة', color: 'bg-orange-600' }
+  ];
+  const showSuccessMessage = (message) => {
+    setSuccessMessage(message);
+    setShowSuccess(true);
+    setTimeout(() => setShowSuccess(false), 3000);
+  };
+  const calculateStats = useCallback((items) => {
+    const totalItems = items.length;
+    const totalQuantity = items.reduce((sum, item) => sum + (item.added_quantity || 0), 0);
+    const lowStockItems = items.filter(item => (item.remaining_quantity || 0) < 10 && (item.remaining_quantity || 0) > 0).length;
+    const outOfStockItems = items.filter(item => (item.remaining_quantity || 0) === 0).length;
+    return { totalItems, totalQuantity, lowStockItems, outOfStockItems };
   }, []);
+
+  // Clock
+  useEffect(() => {
+    const updateClock = () => {
+      const now = new Date().toLocaleTimeString('en-US', { hour12: true, timeZone: 'Africa/Cairo' });
+      setCurrentTime(now);
+    };
+    updateClock();
+    const interval = setInterval(updateClock, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Print styles
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.innerHTML = `
+      @media print {
+        body { background: white !important; color: black !important; }
+        .shadow-xl, .backdrop-blur, .rounded-2xl { display: none !important; }
+        table { border-collapse: collapse; width: 100%; font-size: 12px; }
+        th, td { border: 1px solid #000; padding: 8px; text-align: right; }
+        th { background: #f0f0f0; font-weight: bold; }
+      }
+    `;
+    document.head.appendChild(style);
+    return () => document.head.removeChild(style);
+  }, []);
+
+  const formatDate = (timestamp) => {
+    if (!timestamp) return '-';
+    let date;
+    if (timestamp.toDate) date = timestamp.toDate();
+    else if (timestamp.seconds) date = new Date(timestamp.seconds * 1000);
+    else date = new Date(timestamp);
+    return date.toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    const formatted = items.map(item => ({
+      ...item,
+      color: item.color || 'غير محدد',
+      createdAt: formatDate(item.createdAt),
+    }));
+    setFormattedItems(formatted);
+  }, [items]);
 
-  // Optimized filtering with useMemo
-  const filtered = useMemo(() => {
-    if (!debouncedQuery) return invoices;
-    
-    const q = debouncedQuery.toLowerCase();
-    return invoices.filter((inv) =>
-      String(inv.invoice_number || '').toLowerCase().includes(q) ||
-      (inv.client_name || '').toLowerCase().includes(q) ||
-      (inv.supplier_name || '').toLowerCase().includes(q) ||
-      (inv.recipient || '').toLowerCase().includes(q) ||
-      (inv.client_phone || '').includes(q) ||
-      (inv.created_by_username || '').toLowerCase().includes(q)
-    );
-  }, [invoices, debouncedQuery]);
-
-  // Memoized calculations
-  const totalSales = useMemo(() => 
-    invoices.reduce((sum, inv) =>
-      inv.invoice_type !== 'FACTORY_DISPATCH' ? sum + parseNumber(inv.total_amount) : sum, 0),
-    [invoices]
-  );
-
-  const invoiceClients = useMemo(() => {
-    const clientMap = new Map();
-    invoices.forEach(inv => {
-      if (inv.client_name && inv.client_phone) {
-        clientMap.set(inv.client_phone, {
-          name: inv.client_name,
-          phone: inv.client_phone,
-          type: 'عادي',
-          notes: `آخر فاتورة: ${inv.invoice_number}`
-        });
+  // Firestore listener
+  useEffect(() => {
+    const warehouseId = warehouseIdMap[inventoryType];
+    const col = collection(db, 'warehouseItems');
+    const constraints = [where('warehouseId', '==', warehouseId)];
+    if (filters.from_date || filters.to_date) {
+      if (filters.from_date) constraints.push(where('createdAt', '>=', Timestamp.fromDate(new Date(filters.from_date))));
+      if (filters.to_date) {
+        const end = new Date(filters.to_date);
+        end.setHours(23, 59, 59, 999);
+        constraints.push(where('createdAt', '<=', Timestamp.fromDate(end)));
       }
-    });
-    return Array.from(clientMap.values());
-  }, [invoices]);
-
-  const suppliers = useMemo(() => {
-    const supplierMap = new Map();
-    invoices.forEach(inv => {
-      if (inv.supplier_name) {
-        supplierMap.set(inv.supplier_name, {
-          name: inv.supplier_name,
-          type: 'مورد'
-        });
-      }
-    });
-    return Array.from(supplierMap.values());
-  }, [invoices]);
-
-  // Optimized event handlers
-  const handleDeleteInvoice = useCallback(async (invoiceId) => {
-    if (window.confirm('هل أنت متأكد من حذف هذه الفاتورة؟')) {
-      try {
-        const invoiceDocRef = doc(db, 'invoices', invoiceId);
-        const invoiceDocSnap = await getDoc(invoiceDocRef);
-        
-        if (invoiceDocSnap.exists()) {
-          const invoiceData = invoiceDocSnap.data();
-          if (invoiceData.details && (invoiceData.invoice_type === 'SALE' || invoiceData.invoice_type === 'FACTORY_DISPATCH')) {
-            const restorePromises = invoiceData.details.map(async (detail) => {
-              if (detail.stock_id) {
-                const stockRef = doc(db, 'warehouseItems', detail.stock_id);
-                try {
-                  const stockDoc = await getDoc(stockRef);
-                  if (stockDoc.exists()) {
-                    const stockData = stockDoc.data();
-                    const newQuantity = (stockData.remaining_quantity || 0) + parseNumber(detail.quantity);
-                    await updateDoc(stockRef, {
-                      remaining_quantity: newQuantity,
-                      updatedAt: Timestamp.now()
-                    });
-                  }
-                } catch (stockErr) {
-                  console.error('Error restoring stock:', stockErr);
-                }
-              }
-            });
-            await Promise.all(restorePromises);
-          }
-        }
-
-        await deleteDoc(doc(db, 'invoices', invoiceId));
-        fetchData();
-      } catch (err) {
-        console.error('Delete Error:', err);
-        setError(`فشل في حذف الفاتورة: ${err.message}`);
-      }
-    }
-  }, [fetchData]);
-
-  const handleSendWhatsApp = useCallback((invoice) => {
-    if (!invoice || !invoice.details) {
-      setError("لا يمكن إرسال الفاتورة عبر واتساب: بيانات الفاتورة غير صالحة");
-      return;
-    }
-
-    let message;
-    const displayType = getInvoiceTypeDisplay(invoice.invoice_type);
-    
-    if (invoice.invoice_type === 'FACTORY_DISPATCH') {
-      const itemsList = invoice.details.map((d, index) =>
-        `${index + 1}. الصنف: ${d.item_name || '-'}\n الكود: ${d.item_code || '-'}\n اللون: ${d.color || '-'}\n الوحدة: ${d.unit || '-'}\n الكمية: ${d.quantity || 0}\n ملاحظات: ${d.notes || '-'}`
-      ).join('\n\n');
-      
-      message = `إذن تسليم زجاج رقم ${invoice.invoice_number || 'غير متوفر'}
-التاريخ: ${formatDate(invoice.created_at)}
-منصرف إلى: ${invoice.recipient || 'غير متوفر'}
-أنشأها: ${invoice.created_by_username || 'غير متوفر'}
-
-الأصناف:
-${itemsList}
-
-ملاحظات: ${invoice.notes || 'لا توجد'}`;
+    } else if (filters.item_name) {
+      constraints.push(where('item_name', '>=', filters.item_name));
+      constraints.push(where('item_name', '<=', filters.item_name + '\uf8ff'));
     } else {
-      const total = invoice.details.reduce((sum, d) => sum + (parseNumber(d.quantity) * parseNumber(d.unit_price)), 0);
-      const itemsList = invoice.details.map((d, index) =>
-        `${index + 1}. الصنف: ${d.item_name || '-'}\n الكود: ${d.item_code || '-'}\n اللون: ${d.color || '-'}\n الكمية: ${d.quantity || 0}\n سعر الوحدة: ${formatCurrency(d.unit_price)} جنيه\n الإجمالي: ${formatCurrency(parseNumber(d.quantity) * parseNumber(d.unit_price))} جنيه`
-      ).join('\n\n');
-      
-      message = `فاتورة ${displayType} رقم ${invoice.invoice_number || 'غير متوفر'}
-التاريخ: ${formatDate(invoice.created_at)}
-العميل: ${invoice.client_name || 'غير متوفر'}
-${invoice.invoice_type === 'SALE' ? `رقم هاتف العميل: ${invoice.client_phone || 'غير متوفر'}\n` : ''}المورد: ${invoice.supplier_name || 'غير متوفر'}
-أنشأها: ${invoice.created_by_username || 'غير متوفر'}
-
-الأصناف:
-${itemsList}
-
-الإجمالي الكلي: ${formatCurrency(total)} جنيه
-ملاحظات: ${invoice.notes || 'لا توجد'}`;
+      if (filters.item_code) constraints.push(where('item_code', '==', filters.item_code));
+      if (filters.color) constraints.push(where('color', '==', filters.color));
+      if (filters.supplier) constraints.push(where('supplier', '==', filters.supplier));
+      if (filters.location) constraints.push(where('location', '==', filters.location));
     }
+    const q = query(col, ...constraints, orderBy('createdAt', 'desc'));
+    setIsLoading(true);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setItems(data);
+      setResultCount(data.length);
+      setStats(calculateStats(data));
+      setIsLoading(false);
+    }, (err) => {
+      console.error('Firestore error:', err);
+      alert('فشل تحميل البيانات');
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, [filters, inventoryType, calculateStats]);
 
-    const phoneNumber = invoice.invoice_type === 'SALE' && invoice.client_phone ?
-      invoice.client_phone.replace(/\D/g, '') : '';
-    const whatsappUrl = phoneNumber ?
-      `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}` :
-      `https://wa.me/?text=${encodeURIComponent(message)}`;
-    
-    window.open(whatsappUrl, '_blank');
+  const toggleDarkMode = useCallback(() => {
+    setDarkMode(prev => !prev);
+    document.documentElement.classList.toggle('dark');
   }, []);
 
-  const handleFactoryReturn = useCallback((invoice) => {
-    setSelectedForReturn(invoice);
-    setIsReturnDialogOpen(true);
+  const handleApplyFilters = useCallback((localFilters) => setFilters(localFilters), []);
+  const handleResetFilters = useCallback(() => setFilters({ item_name: '', item_code: '', color: '', supplier: '', location: '', from_date: '', to_date: '' }), []);
+  const handleInventoryTypeChange = useCallback((type) => { setInventoryType(type); handleResetFilters(); }, [handleResetFilters]);
+
+  const exportToExcel = async () => {
+    const selected = Object.keys(exportColumns).filter(k => exportColumns[k]);
+    if (!selected.length) return alert('اختر أعمدة للتصدير');
+    const columnsDisplay = {
+      item_name: 'الصنف', item_code: 'الكود', color: 'اللون', cartons_count: 'الكراتين',
+      bottles_per_carton: 'في الكرتونة', single_bottles: 'الفردي', supplier: 'المورد',
+      location: 'مكان الصنف', notes: 'ملاحظات', createdAt: 'التاريخ',
+      added_quantity: 'المضافة', remaining_quantity: 'المتبقية'
+    };
+    const data = formattedItems.map(item => {
+      const row = {};
+      selected.forEach(col => {
+        row[columnsDisplay[col]] = item[col] || '-';
+      });
+      return row;
+    });
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'المخزون');
+    XLSX.writeFile(workbook, `${inventoryType}_${new Date().toISOString().split('T')[0]}.xlsx`);
+    showSuccessMessage('تم التصدير بنجاح!');
+  };
+
+  const printData = () => {
+    if (!formattedItems.length) return alert('لا توجد بيانات');
+    window.print();
+  };
+
+  const handleRowSelect = useCallback((item) => {
+    setSelectedItem({
+      id: item.id, item_name: item.item_name, item_code: item.item_code, color: item.color || '',
+      carton_quantity: item.cartons_count?.toString() || '0', items_per_carton: item.bottles_per_carton?.toString() || '0',
+      individual_items: item.single_bottles?.toString() || '0', supplier: item.supplier || '',
+      location: item.location || '', notes: item.notes || '',
+      total_quantity: item.added_quantity?.toString() || '0', remaining_quantity: item.remaining_quantity?.toString() || '0'
+    });
+    setShowAddModal(true);
   }, []);
 
-  const handleReturnSuccess = useCallback((result) => {
-    setIsReturnDialogOpen(false);
-    setSelectedForReturn(null);
-    fetchData();
-    alert(`تم معالجة مرتجع المصنع بنجاح\nرقم الفاتورة: ${result.return_invoice_number}\n${result.message}`);
-  }, [fetchData]);
-
-  const handleReturnCancel = useCallback(() => {
-    setIsReturnDialogOpen(false);
-    setSelectedForReturn(null);
+  const handleDeleteClick = useCallback((item, e) => {
+    e.stopPropagation();
+    setItemToDelete(item);
+    setShowDeleteModal(true);
   }, []);
 
-  // Optimized table row component
-  const InvoiceRow = React.memo(({ inv, onSelect, onEdit, onDelete, onWhatsApp, onReturn }) => (
-    <tr
-      className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-700"
-      onClick={() => onSelect(inv)}
-    >
-      <td className="p-3 text-gray-700 dark:text-gray-300">{inv.invoice_number || 'غير متوفر'}</td>
-      <td className="p-3">
-        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-          inv.invoice_type === 'SALE' ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' :
-          inv.invoice_type === 'PURCHASE' ? 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' :
-          'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
-        }`}>
-          {getInvoiceTypeDisplay(inv.invoice_type)}
-        </span>
-      </td>
-      <td className="p-3 text-gray-700 dark:text-gray-300">{formatDate(inv.created_at)}</td>
-      <td className="p-3 text-gray-700 dark:text-gray-300">
-        {inv.invoice_type === 'SALE' ? inv.client_name :
-         inv.invoice_type === 'PURCHASE' ? inv.supplier_name :
-         inv.recipient || 'غير متوفر'}
-      </td>
-      <td className="p-3 text-gray-700 dark:text-gray-300">{inv.created_by_username || 'غير متوفر'}</td>
-      <td className="p-3 text-right font-bold text-gray-800 dark:text-white">
-        {inv.invoice_type !== 'FACTORY_DISPATCH' ? `${formatCurrency(inv.total_amount)} جنيه` : '-'}
-      </td>
-      <td className="p-3">
-        <div className="action-buttons">
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect(inv);
-            }}
-            className="action-btn text-blue-500 hover:text-blue-700"
-            title="عرض"
-          >
-            <Eye size={18} />
-          </Button>
-          {inv.invoice_type === 'FACTORY_DISPATCH' && (
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={(e) => {
-                e.stopPropagation();
-                onReturn(inv);
-              }}
-              className="action-btn text-purple-500 hover:text-purple-700"
-              title="مرتجع المصنع"
-            >
-              <RotateCcw size={18} />
-            </Button>
-          )}
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={(e) => {
-              e.stopPropagation();
-              onWhatsApp(inv);
-            }}
-            className="action-btn text-green-500 hover:text-green-700"
-            title="إرسال عبر واتساب"
-          >
-            <FaWhatsapp size={18} />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(inv);
-            }}
-            className="action-btn text-amber-500 hover:text-amber-700"
-            title="تعديل"
-          >
-            <Edit size={18} />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(inv.id);
-            }}
-            className="action-btn text-red-500 hover:text-red-700"
-            title="حذف"
-          >
-            <Trash2 size={18} />
-          </Button>
-        </div>
-      </td>
-    </tr>
-  ));
+  const normalizeArabicNumber = (s) => s.replace(/[٠-٩]/g, c => '٠١٢٣٤٥٦٧٨٩'.indexOf(c).toString());
 
-  InvoiceRow.displayName = 'InvoiceRow';
+  const saveProduct = async (itemData, closeAfter = false) => {
+    const { item_name, item_code, color, carton_quantity, items_per_carton, individual_items, supplier, location, notes } = itemData;
+    if (!item_name || !item_code || !color || !carton_quantity || !items_per_carton) {
+      return alert('املأ الحقول الإلزامية');
+    }
+    const cartons = parseInt(normalizeArabicNumber(carton_quantity)) || 0;
+    const perCarton = parseInt(normalizeArabicNumber(items_per_carton)) || 0;
+    const singles = parseInt(normalizeArabicNumber(individual_items)) || 0;
+    const total = cartons * perCarton + singles;
+    try {
+      const warehouseId = warehouseIdMap[inventoryType];
+      const existingQuery = query(
+        collection(db, 'warehouseItems'),
+        where('warehouseId', '==', warehouseId),
+        where('item_name', '==', item_name.trim()),
+        where('item_code', '==', item_code.trim()),
+        where('color', '==', color.trim())
+      );
+      const snapshot = await getDocs(existingQuery);
+      if (!snapshot.empty && !selectedItem?.id) {
+        const docRef = snapshot.docs[0];
+        const existing = docRef.data();
+        const payload = {
+          cartons_count: existing.cartons_count + cartons,
+          bottles_per_carton: perCarton,
+          single_bottles: singles,
+          added_quantity: existing.added_quantity + total,
+          remaining_quantity: existing.remaining_quantity + total,
+          supplier: supplier?.trim() || existing.supplier,
+          location: location?.trim() || existing.location,
+          notes: notes?.trim() || existing.notes,
+          updatedAt: Timestamp.now()
+        };
+        await updateDoc(doc(db, 'warehouseItems', docRef.id), payload);
+        showSuccessMessage('تم تحديث الصنف');
+      } else {
+        const payload = {
+          warehouseId, item_name: item_name.trim(), item_code: item_code.trim(), color: color.trim(),
+          cartons_count: cartons, bottles_per_carton: perCarton, single_bottles: singles,
+          added_quantity: total, remaining_quantity: total,
+          supplier: supplier?.trim() || null, location: location?.trim() || null, notes: notes?.trim() || null,
+          createdAt: selectedItem?.id ? undefined : Timestamp.now(), updatedAt: Timestamp.now()
+        };
+        if (selectedItem?.id) {
+          await updateDoc(doc(db, 'warehouseItems', selectedItem.id), payload);
+          showSuccessMessage('تم التعديل');
+        } else {
+          await addDoc(collection(db, 'warehouseItems'), payload);
+          showSuccessMessage('تم الإضافة');
+        }
+      }
+      if (closeAfter) { setShowAddModal(false); setSelectedItem(null); }
+      else setSelectedItem(null);
+    } catch (err) {
+      alert('خطأ: ' + err.message);
+    }
+  };
+
+  const deleteProduct = async () => {
+    if (!itemToDelete) return;
+    setDeleteLoading(true);
+    try {
+      await deleteDoc(doc(db, 'warehouseItems', itemToDelete.id));
+      setShowDeleteModal(false); setItemToDelete(null);
+      showSuccessMessage('تم الحذف');
+    } catch (err) {
+      alert('خطأ: ' + err.message);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const tableColumns = [
+    { header: 'الصنف', accessorKey: 'item_name' },
+    { header: 'الكود', accessorKey: 'item_code' },
+    { header: 'اللون', accessorKey: 'color' },
+    { header: 'الكراتين', accessorKey: 'cartons_count' },
+    { header: 'في الكرتونة', accessorKey: 'bottles_per_carton' },
+    { header: 'الفردي', accessorKey: 'single_bottles' },
+    { header: 'المضافة', accessorKey: 'added_quantity' },
+    { header: 'المتبقية', accessorKey: 'remaining_quantity' },
+    { header: 'المورد', accessorKey: 'supplier' },
+    { header: 'مكان الصنف', accessorKey: 'location' },
+    { header: 'ملاحظات', accessorKey: 'notes' },
+    { header: 'التاريخ', accessorKey: 'createdAt' },
+    { header: 'الإجراءات', accessorKey: 'actions' },
+  ];
 
   return (
-    <InvoiceErrorBoundary>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6 space-y-6 font-tajawal transition-colors duration-200" dir="rtl">
-        <OptimizedStyles />
+    <div dir="rtl" className="min-h-screen bg-gray-50 dark:bg-gray-900 p-3 sm:p-4 overflow-auto">
+      <SuccessNotification message={successMessage} isVisible={showSuccess} onClose={() => setShowSuccess(false)} />
 
-        {/* Mobile Header */}
-        <div className="md:hidden flex justify-between items-center mb-4">
-          <h1 className="text-xl font-bold text-gray-800 dark:text-white">نظام الفواتير</h1>
-          <Button
-            variant="ghost"
-            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            className="p-2"
-          >
-            {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
-          </Button>
-        </div>
+      {/* FULL WIDTH CONTAINER – NO max-w-7xl */}
+      <div className="w-full mx-auto space-y-4 sm:space-y-6">
 
-        {/* Main Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="p-3 md:p-4 rounded-lg bg-gradient-to-br from-teal-500 to-emerald-500 text-white shadow">
-              <FileText size={24} className="md:size-7" />
-            </div>
-            <div className="hidden md:block">
-              <h1 className="text-2xl font-semibold text-gray-800 dark:text-white">نظام إدارة الفواتير</h1>
-              <p className="text-sm text-gray-500 dark:text-gray-400">إدارة الفواتير، العملاء، والمخزون بكفاءة</p>
-            </div>
-          </div>
-          <div className="hidden md:flex items-center gap-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">مرحباً، {user?.username || 'غير متوفر'}</span>
-          </div>
-          <div className={`${isMobileMenuOpen ? 'flex' : 'hidden'} md:flex flex-col md:flex-row items-stretch md:items-center gap-2 w-full md:w-auto`}>
-            <div className="relative flex-grow">
-              <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="ابحث برقم فاتورة أو اسم أو رقم هاتف أو اسم المستخدم"
-                className="pl-10 pr-4 w-full"
-              />
-            </div>
-            <Button
-              onClick={() => {
-                setIsCreateOpen(true);
-                setSelected(null);
-              }}
-              className="flex items-center justify-center gap-2 mt-2 md:mt-0 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
-            >
-              <PlusCircle size={16} /> إضافة فاتورة
-            </Button>
-          </div>
-        </div>
-
-        {/* Mobile Stats Cards */}
-        <MobileStats 
-          invoices={invoices}
-          totalSales={totalSales}
-          invoiceClients={invoiceClients}
-          suppliers={suppliers}
-          stockItems={stockItems}
-          onRefresh={fetchData}
-          onCreateInvoice={() => {
-            setIsCreateOpen(true);
-            setSelected(null);
-          }}
-          onShowClients={() => setIsClientListOpen(true)}
-        />
-
-        {/* Main Content */}
-        <div className="flex flex-col lg:flex-row gap-6">
-          {/* Invoices Table */}
-          <div className="flex-1 lg:w-2/3 invoices-table">
-            <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
-                  قائمة الفواتير ({invoices.length})
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                {loading ? (
-                  <LoadingSpinner />
-                ) : error ? (
-                  <div className="py-6 text-center text-red-500 dark:text-red-400">{error}</div>
-                ) : filtered.length === 0 ? (
-                  <div className="py-6 text-center text-gray-500 dark:text-gray-400">لا توجد فواتير متاحة</div>
-                ) : (
-                  <div className="table-container max-h-[60vh]">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-right sticky-header">
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">رقم</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">النوع</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">التاريخ</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[120px]">طرف</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[120px]">أنشأها</th>
-                          <th className="p-3 text-right text-gray-800 dark:text-white font-bold min-w-[100px]">الإجمالي</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[140px] text-center">إجراءات</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map((inv) => (
-                          <InvoiceRow
-                            key={inv.id}
-                            inv={inv}
-                            onSelect={setSelected}
-                            onEdit={(inv) => {
-                              setIsCreateOpen(true);
-                              setSelected(inv);
-                            }}
-                            onDelete={handleDeleteInvoice}
-                            onWhatsApp={handleSendWhatsApp}
-                            onReturn={handleFactoryReturn}
-                          />
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Desktop Stats Cards */}
-          <DesktopStats 
-            invoices={invoices}
-            totalSales={totalSales}
-            invoiceClients={invoiceClients}
-            suppliers={suppliers}
-            stockItems={stockItems}
-            onRefresh={fetchData}
-            onCreateInvoice={() => {
-              setIsCreateOpen(true);
-              setSelected(null);
-            }}
-            onShowClients={() => setIsClientListOpen(true)}
-          />
-        </div>
-
-        {/* Dialogs */}
-        {selected && (
-          <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
-            <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
-                  تفاصيل {selected.invoice_type === 'FACTORY_DISPATCH' ? 'إذن التسليم' : 'الفاتورة'} - {selected.invoice_number || 'غير متوفر'}
-                </DialogTitle>
-              </DialogHeader>
-              <div className="p-4 space-y-4">
-                <InvoicePrint invoice={selected} />
+        {/* Header */}
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-4 sm:p-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
+            <div className="flex items-center gap-3 sm:gap-4">
+              <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-purple-600 flex items-center justify-center shadow-lg">
+                <Database className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
               </div>
-            </DialogContent>
-          </Dialog>
-        )}
-
-        <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-          <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
-                {selected ? 'تحرير الفاتورة' : 'إنشاء فاتورة جديدة'}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="p-4">
-              <CreateInvoiceForm
-                clients={invoiceClients}
-                suppliers={suppliers}
-                stockItems={stockItems}
-                user={user}
-                onCreated={() => {
-                  setIsCreateOpen(false);
-                  setSelected(null);
-                  fetchData();
-                }}
-                onCancel={() => {
-                  setIsCreateOpen(false);
-                  setSelected(null);
-                }}
-                isEdit={!!selected}
-                initialData={selected}
-              />
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">نظام إدارة المخزون</h1>
+                <p className="text-sm sm:text-lg text-gray-600 dark:text-gray-400 mt-1">عرض المخزون والتصفية</p>
+              </div>
             </div>
-          </DialogContent>
-        </Dialog>
-
-        {isReturnDialogOpen && selectedForReturn && (
-          <FactoryReturnDialog
-            invoice={selectedForReturn}
-            user={user}
-            onSuccess={handleReturnSuccess}
-            onCancel={handleReturnCancel}
-          />
-        )}
-
-        <ClientListDialog
-          isOpen={isClientListOpen}
-          onClose={() => setIsClientListOpen(false)}
-          clients={invoiceClients}
-          search={clientSearch}
-          onSearch={setClientSearch}
-        />
-      </div>
-    </InvoiceErrorBoundary>
-  );
-}
-
-// Optimized Sub-components
-const MobileStats = React.memo(({ 
-  invoices, 
-  totalSales, 
-  invoiceClients, 
-  suppliers, 
-  stockItems, 
-  onRefresh, 
-  onCreateInvoice, 
-  onShowClients 
-}) => (
-  <div className="mobile-stats md:hidden space-y-4">
-    <StatsCard 
-      title="إحصائيات سريعة"
-      items={[
-        { label: 'إجمالي الفواتير', value: invoices.length },
-        { label: 'إجمالي المبيعات', value: formatCurrency(totalSales) + ' جنيه' }
-      ]}
-    />
-    
-    <ActionCard
-      title="إنشاء فاتورة جديدة"
-      actions={[
-        { label: 'فاتورة جديدة', onClick: onCreateInvoice, primary: true },
-        { label: 'تحديث البيانات', onClick: onRefresh, outline: true }
-      ]}
-    />
-    
-    <StatsCard
-      title="الأطراف"
-      items={[
-        { label: 'العملاء', value: invoiceClients.length },
-        { label: 'الموردون', value: suppliers.length },
-        { label: 'الأصناف', value: stockItems.length }
-      ]}
-      action={{ label: 'عرض قائمة العملاء', onClick: onShowClients }}
-    />
-  </div>
-));
-
-const DesktopStats = React.memo(({ 
-  invoices, 
-  totalSales, 
-  invoiceClients, 
-  suppliers, 
-  stockItems, 
-  onRefresh, 
-  onCreateInvoice, 
-  onShowClients 
-}) => (
-  <div className="desktop-stats stats-cards lg:w-1/3 space-y-4">
-    <StatsCard 
-      title="إحصائيات سريعة"
-      items={[
-        { label: 'إجمالي الفواتير', value: invoices.length },
-        { label: 'إجمالي المبيعات', value: formatCurrency(totalSales) + ' جنيه' }
-      ]}
-    />
-    
-    <ActionCard
-      title="إنشاء فاتورة جديدة"
-      actions={[
-        { label: 'فاتورة جديدة', onClick: onCreateInvoice, primary: true },
-        { label: 'تحديث البيانات', onClick: onRefresh, outline: true }
-      ]}
-    />
-    
-    <StatsCard
-      title="الأطراف"
-      items={[
-        { label: 'العملاء', value: invoiceClients.length },
-        { label: 'الموردون', value: suppliers.length },
-        { label: 'الأصناف', value: stockItems.length }
-      ]}
-      action={{ label: 'عرض قائمة العملاء', onClick: onShowClients }}
-    />
-  </div>
-));
-
-const StatsCard = React.memo(({ title, items, action }) => (
-  <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-    <CardHeader className="pb-3">
-      <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">{title}</CardTitle>
-    </CardHeader>
-    <CardContent>
-      <div className="space-y-3">
-        {items.map((item, index) => (
-          <div key={index} className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-            <span className="text-sm text-gray-500 dark:text-gray-400">{item.label}</span>
-            <strong className="text-gray-800 dark:text-white">{item.value}</strong>
           </div>
-        ))}
-      </div>
-      {action && (
-        <Button
-          variant="outline"
-          onClick={action.onClick}
-          className="w-full mt-4 border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-        >
-          {action.label}
-        </Button>
-      )}
-    </CardContent>
-  </Card>
-));
+        </motion.div>
 
-const ActionCard = React.memo(({ title, actions }) => (
-  <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-    <CardHeader className="pb-3">
-      <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">{title}</CardTitle>
-    </CardHeader>
-    <CardContent>
-      <div className="flex flex-col gap-3">
-        {actions.map((action, index) => (
-          <Button
-            key={index}
-            onClick={action.onClick}
-            className={action.primary ? 
-              "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600" :
-              "w-full border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-            }
-          >
-            {action.primary && <PlusCircle size={16} />}
-            {action.label}
-          </Button>
-        ))}
-      </div>
-    </CardContent>
-  </Card>
-));
+        {/* Inventory Type & Add Button */}
+        <Card>
+          <CardContent className="p-4 sm:p-5">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
+              <div className="w-full sm:w-auto">
+                <h3 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white mb-2 sm:mb-3 flex items-center gap-2">
+                  <PackageCheck className="w-5 h-5 sm:w-6 sm:h-6" /> إدارة المخزون
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {inventoryTypes.map((type) => (
+                    <motion.button
+                      key={type.value}
+                      onClick={() => handleInventoryTypeChange(type.value)}
+                      whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      className={cn(
+                        "px-3 py-2 sm:px-5 sm:py-3 rounded-xl font-bold transition-all duration-300 shadow-md text-sm sm:text-base",
+                        inventoryType === type.value
+                          ? `${type.color} text-white shadow-lg`
+                          : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                      )}
+                    >
+                      {type.label}
+                    </motion.button>
+                  ))}
+                </div>
+              </div>
+              <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
+                <Button onClick={() => { setSelectedItem(null); setShowAddModal(true); }} className="w-full sm:w-auto text-sm sm:text-base py-2.5 sm:py-3 px-4 sm:px-6">
+                  <Plus className="w-4 h-4 sm:w-5 sm:h-5" /> إضافة صنف جديد
+                </Button>
+              </motion.div>
+            </div>
+          </CardContent>
+        </Card>
 
-const ClientListDialog = React.memo(({ isOpen, onClose, clients, search, onSearch }) => (
-  <Dialog open={isOpen} onOpenChange={onClose}>
-    <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
-      <DialogHeader>
-        <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">قائمة العملاء</DialogTitle>
-      </DialogHeader>
-      <div className="p-4">
-        <div className="relative mb-4">
-          <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-          <Input
-            value={search}
-            onChange={(e) => onSearch(e.target.value)}
-            placeholder="ابحث عن عميل بالاسم أو الهاتف"
-            className="pl-10 pr-4 w-full"
-          />
+        {/* Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <StatCard title="إجمالي الأصناف" value={stats.totalItems} icon={<Package />} color="bg-purple-600" loading={isLoading} />
+          <StatCard title="الكمية الإجمالية" value={stats.totalQuantity} icon={<BarChart3 />} color="bg-emerald-600" loading={isLoading} />
+          <StatCard title="أصناف منخفضة" value={stats.lowStockItems} icon={<TrendingDown />} color="bg-amber-600" loading={isLoading} />
+          <StatCard title="أصناف منتهية" value={stats.outOfStockItems} icon={<XCircle />} color="bg-red-600" loading={isLoading} />
         </div>
-        <div className="client-table-container">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="text-right bg-gray-100 dark:bg-gray-700">
-                <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[150px]">الاسم</th>
-                <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[120px]">رقم الهاتف</th>
-                <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[80px]">النوع</th>
-                <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[200px]">ملاحظات</th>
-              </tr>
-            </thead>
-            <tbody>
-              {clients
-                .filter(client =>
-                  (client.name || '').toLowerCase().includes(search.toLowerCase()) ||
-                  (client.phone || '').includes(search)
-                )
-                .map((client, i) => (
-                  <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-                    <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-right">{client.name || 'غير متوفر'}</td>
-                    <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{client.phone || '-'}</td>
-                    <td className="p-3 border border-gray-300 dark:border-gray-600">
-                      <span className={`px-2 py-1 rounded-full text-xs ${client.type === 'vip' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-600 dark:text-gray-300'}`}>
-                        {client.type === 'vip' ? 'VIP' : 'عادي'}
-                      </span>
-                    </td>
-                    <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{client.notes || '-'}</td>
-                  </tr>
-                ))
-              }
-            </tbody>
-          </table>
-        </div>
+
+        {/* Filter */}
+        <FilterSection
+          filters={filters}
+          exportColumns={exportColumns}
+          setExportColumns={setExportColumns}
+          onApply={handleApplyFilters}
+          onReset={handleResetFilters}
+          currentTime={currentTime}
+          toggleDarkMode={toggleDarkMode}
+          darkMode={darkMode}
+          isLoading={isLoading}
+          onExportToExcel={exportToExcel}
+          onPrint={printData}
+          isExpanded={isFilterExpanded}
+          onToggle={() => setIsFilterExpanded(!isFilterExpanded)}
+        />
+
+        {/* Table */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+          <Card className="shadow-xl">
+            <CardHeader>
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
+                <CardTitle>
+                  <PackageCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+                  المخزون الحالي - {inventoryType === 'monofia' ? 'المنوفية' : inventoryType === 'matbaa' ? 'المطبعة' : 'المخزون الرئيسي'}
+                </CardTitle>
+                <div className="bg-purple-600 text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl shadow-lg text-sm sm:text-base font-bold">
+                  عدد النتائج: {resultCount} سجل
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                columns={tableColumns}
+                data={formattedItems}
+                isLoading={isLoading}
+                emptyMessage="لا توجد بيانات"
+                showActions={true}
+                onEdit={handleRowSelect}
+                onDelete={handleDeleteClick}
+              />
+            </CardContent>
+          </Card>
+        </motion.div>
+
       </div>
-    </DialogContent>
-  </Dialog>
-));
 
-// Custom hooks for performance
-function useDebounce(value, delay) {
-  const [debouncedValue, setDebouncedValue] = useState(value);
+      {/* Modals */}
+      <AnimatePresence>
+        {showAddModal && (
+          <AddItemModal isOpen={showAddModal} onClose={() => { setShowAddModal(false); setSelectedItem(null); }} initialItem={selectedItem} onSave={saveProduct} inventoryType={inventoryType} />
+        )}
+        {showDeleteModal && (
+          <DeleteModal isOpen={showDeleteModal} onClose={() => { setShowDeleteModal(false); setItemToDelete(null); }} onConfirm={deleteProduct} itemName={itemToDelete?.item_name} loading={deleteLoading} />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
-}
-
-// Optimized styles component
-const OptimizedStyles = React.memo(() => (
-  <style>
-    {`
-      .font-tajawal { font-family: 'Tajawal', Arial, sans-serif; }
-      @media print {
-        body * { visibility: hidden; }
-        .print-content, .print-content * { visibility: visible; }
-        .print-content {
-          position: absolute;
-          left: 0;
-          top: 0;
-          width: 210mm;
-          min-height: 297mm;
-          font-size: 12pt;
-          padding: 15mm;
-        }
-      }
-      .stats-cards { max-width: 400px; }
-      @media (max-width: 768px) {
-        .stats-cards { max-width: 100%; order: -1; }
-        .invoices-table { order: 1; }
-        .mobile-stats { display: block; }
-        .desktop-stats { display: none; }
-      }
-      @media (min-width: 769px) {
-        .mobile-stats { display: none; }
-        .desktop-stats { display: block; }
-      }
-      .table-container { overflow-x: auto; }
-      .sticky-header {
-        position: sticky;
-        top: 0;
-        background: white;
-        z-index: 10;
-      }
-      .dark .sticky-header { background: #1f2937; }
-      .action-buttons {
-        display: flex;
-        gap: 4px;
-        justify-content: center;
-      }
-      .action-btn {
-        padding: 6px;
-        border-radius: 4px;
-        transition: all 0.3s ease;
-      }
-      .action-btn:hover {
-        transform: scale(1.1);
-        background-color: rgba(0,0,0,0.05);
-      }
-      .dark .action-btn:hover {
-        background-color: rgba(255,255,255,0.05);
-      }
-      .client-table-container {
-        max-height: 400px;
-        overflow-y: auto;
-      }
-      .client-table-container thead {
-        position: sticky;
-        top: 0;
-        background: white;
-        z-index: 10;
-      }
-      .dark .client-table-container thead {
-        background: #1f2937;
-      }
-    `}
-  </style>
-));
-
-OptimizedStyles.displayName = 'OptimizedStyles';
+export default ViewStockPage;

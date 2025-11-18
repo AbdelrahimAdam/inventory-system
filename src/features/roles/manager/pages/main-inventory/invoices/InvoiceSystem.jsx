@@ -1,6 +1,24 @@
 import React, { useEffect, useState, useMemo, useRef, Component } from "react";
-import { FileText, PlusCircle, Search, Printer, X, Menu, ChevronDown, ChevronUp, Edit, Trash2, Eye, Download, RotateCcw } from "lucide-react";
+import { FileText, PlusCircle, Search, Printer, X, Menu, ChevronDown, ChevronUp, Edit, Trash2, Eye, Download, RotateCcw, Package, Database, Users, MapPin, PackageCheck } from "lucide-react";
 import { FaWhatsapp } from "react-icons/fa";
+import { useNavigate } from "react-router-dom";
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  getDocs, 
+  query, 
+  where, 
+  orderBy,
+  getDoc,
+  writeBatch,
+  increment,
+  Timestamp
+} from 'firebase/firestore';
+import { db } from '@/firebase/config'; // Updated import path
+import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/features/roles/manager/ui/card";
 import { Button } from "@/features/roles/manager/ui/Button";
 import { Input } from "@/features/roles/manager/ui/Input";
@@ -9,29 +27,12 @@ import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
-// Firebase imports
-import { 
-  collection, 
-  query, 
-  orderBy, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  getDocs,
-  getDoc,
-  Timestamp 
-} from 'firebase/firestore';
-import { db } from '@/services/firebase';
-
 // Error Boundary Component
 class InvoiceErrorBoundary extends Component {
   state = { hasError: false, error: null };
-
   static getDerivedStateFromError(error) {
     return { hasError: true, error };
   }
-
   render() {
     if (this.state.hasError) {
       return (
@@ -66,7 +67,7 @@ const formatCurrency = (number) => {
 
 const formatDate = (date) => {
   if (!date) return 'غير متوفر';
-  const parsedDate = date.toDate ? date.toDate() : new Date(date);
+  const parsedDate = date?.toDate ? date.toDate() : new Date(date);
   if (isNaN(parsedDate.getTime())) return 'تاريخ غير صالح';
   return parsedDate.toLocaleDateString('ar-EG', { day: '2-digit', month: '2-digit', year: 'numeric' });
 };
@@ -82,6 +83,854 @@ const getInvoiceTypeDisplay = (type) => {
     'FACTORY_RETURN': 'مرتجع المصنع'
   };
   return typeMap[type] || type;
+};
+
+// Warehouse configuration
+const warehouses = [
+  { value: 'main-inventory', label: 'المخزن الرئيسي', color: 'bg-purple-600' },
+  { value: 'monofia', label: 'المنوفية', color: 'bg-emerald-600' },
+  { value: 'matbaa', label: 'المطبعة', color: 'bg-orange-600' }
+];
+
+// Firebase service functions with proper error handling
+const firebaseService = {
+  // Helper to validate db instance
+  validateDb() {
+    if (!db) {
+      throw new Error('Firestore instance is not available');
+    }
+    return db;
+  },
+
+  // Invoices
+  async getInvoices() {
+    try {
+      const database = this.validateDb();
+      const q = query(collection(database, 'invoices'), orderBy('created_at', 'desc'));
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        invoice_date: doc.data().invoice_date?.toDate?.() || doc.data().invoice_date
+      }));
+    } catch (error) {
+      console.error('Error fetching invoices:', error);
+      throw error;
+    }
+  },
+
+  async createInvoice(invoiceData) {
+    try {
+      const database = this.validateDb();
+      // Generate invoice number
+      const invoicesQuery = query(collection(database, 'invoices'), orderBy('invoice_number', 'desc'));
+      const invoicesSnapshot = await getDocs(invoicesQuery);
+      const lastInvoice = invoicesSnapshot.docs[0]?.data();
+      const lastNumber = lastInvoice?.invoice_number || 0;
+      const newInvoiceNumber = lastNumber + 1;
+
+      const docRef = await addDoc(collection(database, 'invoices'), {
+        ...invoiceData,
+        invoice_number: newInvoiceNumber,
+        created_at: Timestamp.now(),
+        updated_at: Timestamp.now()
+      });
+      
+      // Update stock quantities for sales and factory dispatch (only from main inventory)
+      if (invoiceData.type === 'SALE' || invoiceData.type === 'FACTORY_DISPATCH') {
+        await this.updateStockForInvoice(invoiceData.details, 'decrease');
+      } else if (invoiceData.type === 'PURCHASE') {
+        await this.updateStockForInvoice(invoiceData.details, 'increase');
+      }
+      
+      return { id: docRef.id, ...invoiceData, invoice_number: newInvoiceNumber };
+    } catch (error) {
+      console.error('Error creating invoice:', error);
+      throw error;
+    }
+  },
+
+  async updateInvoice(invoiceId, invoiceData) {
+    try {
+      const database = this.validateDb();
+      const invoiceRef = doc(database, 'invoices', invoiceId);
+      const currentInvoice = await getDoc(invoiceRef);
+      const currentData = currentInvoice.data();
+      
+      // Restore original stock quantities first
+      if (currentData.type === 'SALE' || currentData.type === 'FACTORY_DISPATCH') {
+        await this.updateStockForInvoice(currentData.details, 'increase');
+      } else if (currentData.type === 'PURCHASE') {
+        await this.updateStockForInvoice(currentData.details, 'decrease');
+      }
+      
+      // Update with new quantities
+      if (invoiceData.type === 'SALE' || invoiceData.type === 'FACTORY_DISPATCH') {
+        await this.updateStockForInvoice(invoiceData.details, 'decrease');
+      } else if (invoiceData.type === 'PURCHASE') {
+        await this.updateStockForInvoice(invoiceData.details, 'increase');
+      }
+      
+      await updateDoc(invoiceRef, {
+        ...invoiceData,
+        updated_at: Timestamp.now()
+      });
+    } catch (error) {
+      console.error('Error updating invoice:', error);
+      throw error;
+    }
+  },
+
+  async deleteInvoice(invoiceId) {
+    try {
+      const database = this.validateDb();
+      const invoiceRef = doc(database, 'invoices', invoiceId);
+      const invoiceDoc = await getDoc(invoiceRef);
+      const invoiceData = invoiceDoc.data();
+      
+      // Restore stock quantities when deleting invoice
+      if (invoiceData.type === 'SALE' || invoiceData.type === 'FACTORY_DISPATCH') {
+        await this.updateStockForInvoice(invoiceData.details, 'increase');
+      } else if (invoiceData.type === 'PURCHASE') {
+        await this.updateStockForInvoice(invoiceData.details, 'decrease');
+      }
+      
+      await deleteDoc(invoiceRef);
+    } catch (error) {
+      console.error('Error deleting invoice:', error);
+      throw error;
+    }
+  },
+
+  async updateStockForInvoice(details, operation) {
+    try {
+      const database = this.validateDb();
+      const batch = writeBatch(database);
+      
+      for (const item of details) {
+        if (item.stock_id) {
+          const stockRef = doc(database, 'warehouseItems', item.stock_id);
+          const quantity = parseNumber(item.الكمية);
+          
+          if (operation === 'decrease') {
+            batch.update(stockRef, {
+              remaining_quantity: increment(-quantity)
+            });
+          } else if (operation === 'increase') {
+            batch.update(stockRef, {
+              remaining_quantity: increment(quantity)
+            });
+          }
+        }
+      }
+      
+      await batch.commit();
+    } catch (error) {
+      console.error('Error updating stock:', error);
+      throw error;
+    }
+  },
+
+  // Stock - Only from main inventory for invoices
+  async getStockItems() {
+    try {
+      const database = this.validateDb();
+      const q = query(
+        collection(database, 'warehouseItems'), 
+        where('warehouseId', '==', 'main-inventory'),
+        orderBy('item_name', 'asc')
+      );
+      const querySnapshot = await getDocs(q);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        الصنف: doc.data().item_name,
+        الكود: doc.data().item_code,
+        اللون: doc.data().color,
+        الكمية_المتبقية: doc.data().remaining_quantity || 0,
+        سعر_الوحدة: doc.data().unit_price || 0,
+        الوحدة: 'قطعة'
+      }));
+    } catch (error) {
+      console.error('Error fetching stock items:', error);
+      throw error;
+    }
+  },
+
+  // Clients from invoices
+  async getClients() {
+    try {
+      const database = this.validateDb();
+      const invoicesQuery = query(
+        collection(database, 'invoices'),
+        where('client_name', '!=', null)
+      );
+      const querySnapshot = await getDocs(invoicesQuery);
+      const clientsMap = new Map();
+      
+      querySnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.client_name && data.client_phone) {
+          clientsMap.set(data.client_phone, {
+            name: data.client_name,
+            phone: data.client_phone,
+            type: 'عادي',
+            notes: `آخر فاتورة: ${data.invoice_number}`
+          });
+        }
+      });
+      
+      return Array.from(clientsMap.values());
+    } catch (error) {
+      console.error('Error fetching clients:', error);
+      throw error;
+    }
+  },
+
+  // Suppliers from invoices
+  async getSuppliers() {
+    try {
+      const database = this.validateDb();
+      const invoicesQuery = query(
+        collection(database, 'invoices'),
+        where('supplier_name', '!=', null)
+      );
+      const querySnapshot = await getDocs(invoicesQuery);
+      const suppliersMap = new Map();
+      
+      querySnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.supplier_name) {
+          suppliersMap.set(data.supplier_name, {
+            name: data.supplier_name,
+            type: 'مورد'
+          });
+        }
+      });
+      
+      return Array.from(suppliersMap.values());
+    } catch (error) {
+      console.error('Error fetching suppliers:', error);
+      throw error;
+    }
+  },
+
+  // Factory return
+  async processFactoryReturn(returnData) {
+    try {
+      const database = this.validateDb();
+      // Generate return invoice number
+      const invoicesQuery = query(collection(database, 'invoices'), orderBy('invoice_number', 'desc'));
+      const invoicesSnapshot = await getDocs(invoicesQuery);
+      const lastInvoice = invoicesSnapshot.docs[0]?.data();
+      const lastNumber = lastInvoice?.invoice_number || 0;
+      const newInvoiceNumber = lastNumber + 1;
+
+      // Create return invoice
+      const returnInvoiceRef = await addDoc(collection(database, 'invoices'), {
+        ...returnData,
+        invoice_number: newInvoiceNumber,
+        invoice_type: 'FACTORY_RETURN',
+        created_at: Timestamp.now(),
+        updated_at: Timestamp.now()
+      });
+
+      // Update stock quantities - return items to main inventory
+      const batch = writeBatch(database);
+      
+      for (const item of returnData.details) {
+        if (item.stock_id) {
+          const stockRef = doc(database, 'warehouseItems', item.stock_id);
+          batch.update(stockRef, {
+            remaining_quantity: increment(parseNumber(item.الكمية))
+          });
+        }
+      }
+
+      await batch.commit();
+      return { 
+        id: returnInvoiceRef.id, 
+        ...returnData, 
+        return_invoice_number: newInvoiceNumber,
+        message: 'تم معالجة مرتجع المصنع بنجاح'
+      };
+    } catch (error) {
+      console.error('Error processing factory return:', error);
+      throw error;
+    }
+  }
+};
+
+// Add Item Modal Component
+const AddItemModal = ({ isOpen, onClose, onSave, initialItem, isEdit = false }) => {
+  const [formData, setFormData] = useState({
+    item_name: '',
+    item_code: '',
+    color: '',
+    cartons_count: '',
+    bottles_per_carton: '',
+    single_bottles: '',
+    supplier: '',
+    location: '',
+    notes: '',
+    warehouseId: 'main-inventory',
+    unit_price: ''
+  });
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (initialItem && isEdit) {
+      setFormData({
+        item_name: initialItem.item_name || '',
+        item_code: initialItem.item_code || '',
+        color: initialItem.color || '',
+        cartons_count: initialItem.cartons_count?.toString() || '',
+        bottles_per_carton: initialItem.bottles_per_carton?.toString() || '',
+        single_bottles: initialItem.single_bottles?.toString() || '',
+        supplier: initialItem.supplier || '',
+        location: initialItem.location || '',
+        notes: initialItem.notes || '',
+        warehouseId: initialItem.warehouseId || 'main-inventory',
+        unit_price: initialItem.unit_price?.toString() || ''
+      });
+    } else {
+      setFormData({
+        item_name: '',
+        item_code: '',
+        color: '',
+        cartons_count: '',
+        bottles_per_carton: '',
+        single_bottles: '',
+        supplier: '',
+        location: '',
+        notes: '',
+        warehouseId: 'main-inventory',
+        unit_price: ''
+      });
+    }
+  }, [initialItem, isEdit]);
+
+  const calculateTotalQuantity = () => {
+    const cartons = parseNumber(formData.cartons_count);
+    const perCarton = parseNumber(formData.bottles_per_carton);
+    const singles = parseNumber(formData.single_bottles);
+    return (cartons * perCarton) + singles;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (!formData.item_name || !formData.item_code) {
+      setError('يرجى إدخال اسم الصنف والكود');
+      return;
+    }
+
+    if (!formData.cartons_count || !formData.bottles_per_carton) {
+      setError('يرجى إدخال عدد الكراتين وعدد القطع في الكرتونة');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const totalQuantity = calculateTotalQuantity();
+      const itemData = {
+        item_name: formData.item_name.trim(),
+        item_code: formData.item_code.trim(),
+        color: formData.color.trim(),
+        cartons_count: parseNumber(formData.cartons_count),
+        bottles_per_carton: parseNumber(formData.bottles_per_carton),
+        single_bottles: parseNumber(formData.single_bottles),
+        supplier: formData.supplier.trim(),
+        location: formData.location.trim(),
+        notes: formData.notes.trim(),
+        warehouseId: formData.warehouseId,
+        unit_price: parseNumber(formData.unit_price) || 0,
+        added_quantity: totalQuantity,
+        remaining_quantity: isEdit ? initialItem.remaining_quantity : totalQuantity,
+        updatedAt: Timestamp.now()
+      };
+
+      if (!isEdit) {
+        itemData.createdAt = Timestamp.now();
+      }
+
+      await onSave(itemData, isEdit);
+      onClose();
+    } catch (error) {
+      console.error('Error saving item:', error);
+      setError('حدث خطأ أثناء حفظ الصنف');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleChange = (field, value) => {
+    setFormData(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
+            {isEdit ? 'تعديل الصنف' : 'إضافة صنف جديد'}
+          </DialogTitle>
+          <DialogDescription>
+            {isEdit ? 'قم بتعديل بيانات الصنف' : 'أدخل بيانات الصنف الجديد'}
+          </DialogDescription>
+        </DialogHeader>
+        
+        <form onSubmit={handleSubmit} className="space-y-4 p-4">
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-red-700 text-sm">{error}</p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Basic Information */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-white border-b pb-2">
+                المعلومات الأساسية
+              </h3>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  اسم الصنف *
+                </label>
+                <Input
+                  value={formData.item_name}
+                  onChange={(e) => handleChange('item_name', e.target.value)}
+                  placeholder="أدخل اسم الصنف"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  الكود *
+                </label>
+                <Input
+                  value={formData.item_code}
+                  onChange={(e) => handleChange('item_code', e.target.value)}
+                  placeholder="أدخل كود الصنف"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  اللون
+                </label>
+                <Input
+                  value={formData.color}
+                  onChange={(e) => handleChange('color', e.target.value)}
+                  placeholder="أدخل اللون"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  سعر الوحدة
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={formData.unit_price}
+                  onChange={(e) => handleChange('unit_price', e.target.value)}
+                  placeholder="أدخل سعر الوحدة"
+                />
+              </div>
+            </div>
+
+            {/* Quantity Information */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-white border-b pb-2">
+                معلومات الكمية
+              </h3>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  عدد الكراتين *
+                </label>
+                <Input
+                  type="number"
+                  value={formData.cartons_count}
+                  onChange={(e) => handleChange('cartons_count', e.target.value)}
+                  placeholder="عدد الكراتين"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  عدد القطع في الكرتونة *
+                </label>
+                <Input
+                  type="number"
+                  value={formData.bottles_per_carton}
+                  onChange={(e) => handleChange('bottles_per_carton', e.target.value)}
+                  placeholder="عدد القطع في الكرتونة"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  القطع الفردية
+                </label>
+                <Input
+                  type="number"
+                  value={formData.single_bottles}
+                  onChange={(e) => handleChange('single_bottles', e.target.value)}
+                  placeholder="القطع الفردية"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  المستودع
+                </label>
+                <select
+                  value={formData.warehouseId}
+                  onChange={(e) => handleChange('warehouseId', e.target.value)}
+                  className="w-full p-3 border rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-white"
+                >
+                  {warehouses.map(wh => (
+                    <option key={wh.value} value={wh.value}>{wh.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Additional Information */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-white border-b pb-2">
+              معلومات إضافية
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  المورد
+                </label>
+                <Input
+                  value={formData.supplier}
+                  onChange={(e) => handleChange('supplier', e.target.value)}
+                  placeholder="اسم المورد"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  الموقع
+                </label>
+                <Input
+                  value={formData.location}
+                  onChange={(e) => handleChange('location', e.target.value)}
+                  placeholder="موقع التخزين"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                ملاحظات
+              </label>
+              <textarea
+                value={formData.notes}
+                onChange={(e) => handleChange('notes', e.target.value)}
+                placeholder="ملاحظات إضافية"
+                rows={3}
+                className="w-full p-3 border rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-white"
+              />
+            </div>
+          </div>
+
+          {/* Summary Card */}
+          <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20">
+            <CardContent className="p-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center">
+                  <div className="text-sm text-gray-600 dark:text-gray-400">الكمية الإجمالية</div>
+                  <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
+                    {calculateTotalQuantity().toLocaleString()}
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-sm text-gray-600 dark:text-gray-400">المستودع</div>
+                  <div className="text-lg font-semibold text-gray-800 dark:text-white">
+                    {warehouses.find(w => w.value === formData.warehouseId)?.label}
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-sm text-gray-600 dark:text-gray-400">سعر الوحدة</div>
+                  <div className="text-lg font-semibold text-green-600 dark:text-green-400">
+                    {formatCurrency(formData.unit_price)}
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-sm text-gray-600 dark:text-gray-400">الحالة</div>
+                  <div className="text-lg font-semibold text-gray-800 dark:text-white">
+                    {isEdit ? 'تعديل' : 'جديد'}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              type="submit"
+              disabled={saving}
+              className="flex-1 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+            >
+              {saving ? 'جاري الحفظ...' : (isEdit ? 'تحديث الصنف' : 'حفظ الصنف')}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onClose}
+              className="flex-1"
+            >
+              إلغاء
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+// Items Management Component
+const ItemsManagement = ({ onItemSelect, showItemsManagement, setShowItemsManagement }) => {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedWarehouse, setSelectedWarehouse] = useState('main-inventory');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [isEdit, setIsEdit] = useState(false);
+
+  const fetchItems = async () => {
+    try {
+      setLoading(true);
+      const database = firebaseService.validateDb();
+      const q = query(
+        collection(database, 'warehouseItems'),
+        where('warehouseId', '==', selectedWarehouse),
+        orderBy('item_name', 'asc')
+      );
+      const querySnapshot = await getDocs(q);
+      const itemsData = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setItems(itemsData);
+    } catch (error) {
+      console.error('Error fetching items:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveItem = async (itemData, isEdit = false) => {
+    try {
+      const database = firebaseService.validateDb();
+      if (isEdit && selectedItem) {
+        await updateDoc(doc(database, 'warehouseItems', selectedItem.id), itemData);
+      } else {
+        await addDoc(collection(database, 'warehouseItems'), itemData);
+      }
+      fetchItems(); // Refresh the list
+    } catch (error) {
+      console.error('Error saving item:', error);
+      throw error;
+    }
+  };
+
+  const deleteItem = async (itemId) => {
+    if (window.confirm('هل أنت متأكد من حذف هذا الصنف؟')) {
+      try {
+        const database = firebaseService.validateDb();
+        await deleteDoc(doc(database, 'warehouseItems', itemId));
+        fetchItems();
+      } catch (error) {
+        console.error('Error deleting item:', error);
+        alert('حدث خطأ أثناء حذف الصنف');
+      }
+    }
+  };
+
+  const handleEdit = (item) => {
+    setSelectedItem(item);
+    setIsEdit(true);
+    setShowAddModal(true);
+  };
+
+  const handleAddNew = () => {
+    setSelectedItem(null);
+    setIsEdit(false);
+    setShowAddModal(true);
+  };
+
+  const filteredItems = useMemo(() => {
+    return items.filter(item =>
+      item.item_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.item_code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.color?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.supplier?.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [items, searchTerm]);
+
+  useEffect(() => {
+    if (showItemsManagement) {
+      fetchItems();
+    }
+  }, [selectedWarehouse, showItemsManagement]);
+
+  if (!showItemsManagement) return null;
+
+  return (
+    <Dialog open={showItemsManagement} onOpenChange={setShowItemsManagement}>
+      <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+            <Package className="w-5 h-5" />
+            إدارة الأصناف
+          </DialogTitle>
+          <DialogDescription>
+            إدارة الأصناف والمخزون في المستودعات المختلفة
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 p-4">
+          {/* Filters and Actions */}
+          <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
+            <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+              <select
+                value={selectedWarehouse}
+                onChange={(e) => setSelectedWarehouse(e.target.value)}
+                className="p-2 border rounded bg-white dark:bg-gray-700 text-gray-800 dark:text-white"
+              >
+                {warehouses.map(wh => (
+                  <option key={wh.value} value={wh.value}>{wh.label}</option>
+                ))}
+              </select>
+              
+              <div className="relative flex-1">
+                <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+                <Input
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="ابحث بالصنف، الكود، اللون أو المورد..."
+                  className="pl-10"
+                />
+              </div>
+            </div>
+            
+            <Button
+              onClick={handleAddNew}
+              className="bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+            >
+              <PlusCircle className="w-4 h-4" />
+              إضافة صنف
+            </Button>
+          </div>
+
+          {/* Items Table */}
+          {loading ? (
+            <div className="text-center py-8">جاري التحميل...</div>
+          ) : filteredItems.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">لا توجد أصناف</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-100 dark:bg-gray-700">
+                    <th className="p-3 text-right">الصنف</th>
+                    <th className="p-3 text-right">الكود</th>
+                    <th className="p-3 text-right">اللون</th>
+                    <th className="p-3 text-right">المتاح</th>
+                    <th className="p-3 text-right">سعر الوحدة</th>
+                    <th className="p-3 text-right">المستودع</th>
+                    <th className="p-3 text-right">الإجراءات</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredItems.map((item) => (
+                    <tr key={item.id} className="border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
+                      <td className="p-3">{item.item_name}</td>
+                      <td className="p-3">{item.item_code}</td>
+                      <td className="p-3">{item.color || '-'}</td>
+                      <td className="p-3 text-center">
+                        <span className={`px-2 py-1 rounded-full text-xs ${
+                          item.remaining_quantity === 0 ? 'bg-red-100 text-red-800' :
+                          item.remaining_quantity < 10 ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-green-100 text-green-800'
+                        }`}>
+                          {item.remaining_quantity}
+                        </span>
+                      </td>
+                      <td className="p-3 text-left">{formatCurrency(item.unit_price || 0)}</td>
+                      <td className="p-3">
+                        <span className={`px-2 py-1 rounded-full text-xs text-white ${
+                          warehouses.find(w => w.value === item.warehouseId)?.color
+                        }`}>
+                          {warehouses.find(w => w.value === item.warehouseId)?.label}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex gap-2 justify-end">
+                          <Button
+                            size="sm"
+                            onClick={() => onItemSelect(item)}
+                            className="bg-blue-500 hover:bg-blue-600"
+                          >
+                            اختر للفاتورة
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => handleEdit(item)}
+                            variant="outline"
+                          >
+                            <Edit className="w-3 h-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => deleteItem(item.id)}
+                            variant="red"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <AddItemModal
+          isOpen={showAddModal}
+          onClose={() => setShowAddModal(false)}
+          onSave={saveItem}
+          initialItem={selectedItem}
+          isEdit={isEdit}
+        />
+      </DialogContent>
+    </Dialog>
+  );
 };
 
 // Printable Invoice Component
@@ -132,12 +981,12 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
       ], { skipHeader: true });
       const itemsData = (invoice.details || []).map((d, index) => ({
         "م": index + 1,
-        "الكود/التشغيله": d.item_code || '-',
-        "اسم الصنف/الوصف": d.item_name || '-',
-        "اللون": d.color || '-',
-        "الوحدة": d.unit || '-',
-        "الكمية": d.quantity || 0,
-        "ملاحظات": d.notes || '-',
+        "الكود/التشغيله": d.الكود || '-',
+        "اسم الصنف/الوصف": d.الصنف || '-',
+        "اللون": d.اللون || '-',
+        "الوحدة": d.الوحدة || '-',
+        "الكمية": d.الكمية || 0,
+        "ملاحظات": d.ملاحظات || '-',
       }));
       XLSX.utils.sheet_add_json(ws, itemsData, { origin: -1 });
       XLSX.utils.book_append_sheet(wb, ws, "إذن تسليم زجاج");
@@ -155,12 +1004,12 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
         { A: "الأصناف" },
       ], { skipHeader: true });
       const itemsData = (invoice.details || []).map((d, index) => ({
-        "الصنف": d.item_name || '-',
-        "الكود": d.item_code || '-',
-        "اللون": d.color || '-',
-        "الكمية": d.quantity || 0,
-        "سعر الوحدة (جنيه)": formatCurrency(d.unit_price),
-        "الإجمالي (جنيه)": formatCurrency(parseNumber(d.quantity) * parseNumber(d.unit_price)),
+        "الصنف": d.الصنف || '-',
+        "الكود": d.الكود || '-',
+        "اللون": d.اللون || '-',
+        "الكمية": d.الكمية || 0,
+        "سعر الوحدة (جنيه)": formatCurrency(d.serial_الوحدة),
+        "الإجمالي (جنيه)": formatCurrency(parseNumber(d.الكمية) * parseNumber(d.serial_الوحدة)),
       }));
       XLSX.utils.sheet_add_json(ws, itemsData, { origin: -1 });
       XLSX.utils.sheet_add_json(ws, [
@@ -175,7 +1024,7 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
     return null;
   }
 
-  const totalQuantity = invoice.details.reduce((sum, d) => sum + parseNumber(d.quantity), 0);
+  const totalQuantity = invoice.details.reduce((sum, d) => sum + parseNumber(d.الكمية), 0);
   const displayType = getInvoiceTypeDisplay(invoice.invoice_type);
 
   return (
@@ -185,7 +1034,7 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-10 z-0">
           <div className="text-6xl font-bold text-gray-400 dark:text-gray-600">EL BARAN</div>
         </div>
-
+        
         {/* Company Header */}
         <div className="flex justify-between items-start mb-6 border-b-2 border-gray-300 dark:border-gray-600 pb-4">
           <div className="text-left">
@@ -244,12 +1093,12 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
                   {(invoice.details || []).map((d, index) => (
                     <tr key={index} className="border-b border-gray-800 dark:border-gray-400">
                       <td className="border border-gray-800 dark:border-gray-400 p-2 text-center text-gray-700 dark:text-gray-300">{index + 1}</td>
-                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.item_name || ''}</td>
-                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.item_code || ''}</td>
-                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.color || ''}</td>
-                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.unit || ''}</td>
-                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-center text-gray-700 dark:text-gray-300">{d.quantity || ''}</td>
-                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.notes || ''}</td>
+                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.الصنف || ''}</td>
+                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.الكود || ''}</td>
+                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.اللون || ''}</td>
+                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.الوحدة || ''}</td>
+                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-center text-gray-700 dark:text-gray-300">{d.الكمية || ''}</td>
+                      <td className="border border-gray-800 dark:border-gray-400 p-2 text-gray-700 dark:text-gray-300">{d.ملاحظات || ''}</td>
                     </tr>
                   ))}
                   {Array.from({ length: Math.max(0, 15 - (invoice.details?.length || 0)) }).map((_, index) => (
@@ -322,13 +1171,13 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
                 <tbody>
                   {(invoice.details || []).map((d, index) => (
                     <tr key={index} className="border-b border-gray-300 dark:border-gray-600">
-                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-right text-gray-700 dark:text-gray-300">{d.item_name || '-'}</td>
-                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-gray-700 dark:text-gray-300">{d.item_code || '-'}</td>
-                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-gray-700 dark:text-gray-300">{d.color || '-'}</td>
-                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-center text-gray-700 dark:text-gray-300">{d.quantity || 0}</td>
-                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-right text-gray-700 dark:text-gray-300">{formatCurrency(d.unit_price)}</td>
+                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-right text-gray-700 dark:text-gray-300">{d.الصنف || '-'}</td>
+                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-gray-700 dark:text-gray-300">{d.الكود || '-'}</td>
+                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-gray-700 dark:text-gray-300">{d.اللون || '-'}</td>
+                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-center text-gray-700 dark:text-gray-300">{d.الكمية || 0}</td>
+                      <td className="border border-gray-300 dark:border-gray-600 p-3 text-right text-gray-700 dark:text-gray-300">{formatCurrency(d.serial_الوحدة)}</td>
                       <td className="border border-gray-300 dark:border-gray-600 p-3 text-right text-gray-700 dark:text-gray-300">
-                        {formatCurrency(parseNumber(d.quantity) * parseNumber(d.unit_price))}
+                        {formatCurrency(parseNumber(d.الكمية) * parseNumber(d.serial_الوحدة))}
                       </td>
                     </tr>
                   ))}
@@ -345,7 +1194,6 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
             </div>
           </>
         )}
-
         <div className="relative z-10 text-center text-gray-600 dark:text-gray-400 mt-6">
           <p className="text-sm">نشكر ثقتكم بمنتجاتنا 🌸</p>
           {invoice.invoice_type !== 'FACTORY_DISPATCH' && (
@@ -370,7 +1218,6 @@ const InvoicePrint = React.forwardRef(({ invoice }, ref) => {
     </div>
   );
 });
-
 InvoicePrint.displayName = 'InvoicePrint';
 
 // Factory Return Dialog Component
@@ -390,54 +1237,27 @@ const FactoryReturnDialog = ({ invoice, user, onSuccess, onCancel }) => {
     setError('');
 
     try {
-      // Generate return invoice number
-      const returnInvoiceNumber = `RET-${invoice.invoice_number}-${Date.now()}`;
-      
-      // Create return invoice in Firestore
-      const returnInvoiceData = {
-        invoice_number: returnInvoiceNumber,
-        invoice_type: 'FACTORY_RETURN',
-        original_invoice_id: invoice.id,
-        original_invoice_number: invoice.invoice_number,
+      const returnData = {
+        invoice_id: invoice.id,
         return_type: returnType,
-        recipient: invoice.recipient,
-        details: invoice.details,
+        user_id: user.id,
         notes: notes || undefined,
-        created_by: user.id,
-        created_by_username: user.username,
-        created_at: Timestamp.now(),
-        total_amount: 0
+        details: invoice.details || [],
+        type: 'FACTORY_RETURN',
+        client_name: invoice.client_name,
+        supplier_name: invoice.supplier_name,
+        recipient: invoice.recipient,
+        total_amount: 0,
+        created_by_username: user.username || 'غير معروف'
       };
 
-      const docRef = await addDoc(collection(db, 'invoices'), returnInvoiceData);
-
-      // Update stock quantities in main inventory
-      const updatePromises = invoice.details.map(async (detail) => {
-        if (detail.stock_id) {
-          const stockRef = doc(db, 'warehouseItems', detail.stock_id);
-          try {
-            const stockDoc = await getDoc(stockRef);
-            if (stockDoc.exists()) {
-              const stockData = stockDoc.data();
-              const newQuantity = (stockData.remaining_quantity || 0) + parseNumber(detail.quantity);
-              await updateDoc(stockRef, {
-                remaining_quantity: newQuantity,
-                updatedAt: Timestamp.now()
-              });
-            }
-          } catch (stockErr) {
-            console.error('Error updating stock for return:', stockErr);
-          }
-        }
-      });
-
-      await Promise.all(updatePromises);
-
-      onSuccess({
-        success: true,
-        return_invoice_number: returnInvoiceNumber,
-        message: 'تم معالجة مرتجع المصنع بنجاح'
-      });
+      const result = await firebaseService.processFactoryReturn(returnData);
+      
+      if (result) {
+        onSuccess(result);
+      } else {
+        setError('فشل في معالجة المرتجع');
+      }
     } catch (err) {
       console.error('Factory return error:', err);
       setError(err.message || 'حدث خطأ أثناء معالجة المرتجع');
@@ -512,7 +1332,7 @@ const FactoryReturnDialog = ({ invoice, user, onSuccess, onCancel }) => {
 };
 
 // Create Invoice Form Component
-function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, onCancel, isEdit, initialData }) {
+function CreateInvoiceForm({ clients, suppliers, user, onCreated, onCancel, isEdit, initialData }) {
   const [type, setType] = useState(initialData?.invoice_type || "SALE");
   const [party, setParty] = useState(initialData ? (initialData.invoice_type === 'SALE' ? initialData.client_name : initialData.invoice_type === 'PURCHASE' ? initialData.supplier_name : initialData.recipient) : "");
   const [clientPhone, setClientPhone] = useState(initialData?.client_phone || "");
@@ -527,18 +1347,42 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
   const [showItemForm, setShowItemForm] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [notes, setNotes] = useState(initialData?.notes || "");
+  const [stockItems, setStockItems] = useState([]);
+  const [showItemsManagement, setShowItemsManagement] = useState(false);
+  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    fetchStockItems();
+  }, []);
+
+  const fetchStockItems = async () => {
+    try {
+      const items = await firebaseService.getStockItems();
+      setStockItems(items);
+    } catch (error) {
+      console.error('Error fetching stock items:', error);
+    }
+  };
+
+  const handleItemSelect = (item) => {
+    setSelectedItem(item.id);
+    setPrice(item.unit_price || '');
+    setUnit('قطعة');
+    setShowItemsManagement(false);
+  };
 
   const filteredItems = useMemo(() => {
     if (!itemSearch) return stockItems;
     return stockItems.filter(item =>
-      (item.item_name || '').toLowerCase().includes(itemSearch.toLowerCase()) ||
-      (item.item_code || '').toLowerCase().includes(itemSearch.toLowerCase()) ||
-      (item.color || '').toLowerCase().includes(itemSearch.toLowerCase())
+      (item.الصنف || '').toLowerCase().includes(itemSearch.toLowerCase()) ||
+      (item.الكود || '').toLowerCase().includes(itemSearch.toLowerCase()) ||
+      (item.اللون || '').toLowerCase().includes(itemSearch.toLowerCase())
     );
   }, [stockItems, itemSearch]);
 
-  const totalQty = details.reduce((sum, d) => sum + parseNumber(d.quantity), 0);
-  const total = type !== 'FACTORY_DISPATCH' ? details.reduce((s, d) => s + (parseNumber(d.quantity) * parseNumber(d.unit_price)), 0) : 0;
+  const totalQty = details.reduce((sum, d) => sum + parseNumber(d.الكمية), 0);
+  const total = type !== 'FACTORY_DISPATCH' ? details.reduce((s, d) => s + (parseNumber(d.الكمية) * parseNumber(d.serial_الوحدة)), 0) : 0;
 
   const addLine = () => {
     if (!selectedItem || qty <= 0) {
@@ -557,8 +1401,8 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
       return;
     }
    
-    if ((type === 'SALE' || type === 'FACTORY_DISPATCH') && item.remaining_quantity < qty) {
-      setError(`الكمية غير كافية للصنف ${item.item_name}: المتوفر ${item.remaining_quantity}، المطلوب ${qty}`);
+    if ((type === 'SALE' || type === 'FACTORY_DISPATCH') && item.الكمية_المتبقية < qty) {
+      setError(`الكمية غير كافية للصنف ${item.الصنف}: المتوفر ${item.الكمية_المتبقية}، المطلوب ${qty}`);
       return;
     }
    
@@ -566,24 +1410,24 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
    
     const newDetail = {
       stock_id: item.id,
-      item_name: item.item_name,
-      item_code: item.item_code,
-      color: item.color,
-      quantity: parseInt(qty),
+      الصنف: item.الصنف,
+      الكود: item.الكود,
+      اللون: item.اللون,
+      الكمية: parseInt(qty),
     };
     if (type !== 'FACTORY_DISPATCH') {
-      newDetail.unit_price = parseFloat(price) || 0;
+      newDetail.serial_الوحدة = parseFloat(price) || 0;
     } else {
-      newDetail.unit = unit || '';
-      newDetail.notes = itemNotes || '';
+      newDetail.الوحدة = unit || '';
+      newDetail.ملاحظات = itemNotes || '';
     }
     if (existingItemIndex >= 0) {
       const updatedDetails = [...details];
       updatedDetails[existingItemIndex] = {
         ...updatedDetails[existingItemIndex],
-        quantity: parseInt(updatedDetails[existingItemIndex].quantity) + parseInt(qty),
-        ...(type !== 'FACTORY_DISPATCH' && { unit_price: parseFloat(price) || 0 }),
-        ...(type === 'FACTORY_DISPATCH' && { unit: unit || '', notes: itemNotes || '' })
+        الكمية: parseInt(updatedDetails[existingItemIndex].الكمية) + parseInt(qty),
+        ...(type !== 'FACTORY_DISPATCH' && { serial_الوحدة: parseFloat(price) || 0 }),
+        ...(type === 'FACTORY_DISPATCH' && { الوحدة: unit || '', ملاحظات: itemNotes || '' })
       };
       setDetails(updatedDetails);
     } else {
@@ -609,20 +1453,21 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
   const updateDetail = (index, field, value) => {
     const newDetails = [...details];
     const item = stockItems.find(s => s.id === newDetails[index].stock_id);
-    if (field === 'quantity' && (type === 'SALE' || type === 'FACTORY_DISPATCH') && item && parseInt(value) > item.remaining_quantity) {
-      setError(`الكمية غير كافية للصنف ${item.item_name}: المتوفر ${item.remaining_quantity}، المطلوب ${value}`);
+    if (field === 'الكمية' && (type === 'SALE' || type === 'FACTORY_DISPATCH') && item && parseInt(value) > item.الكمية_المتبقية) {
+      setError(`الكمية غير كافية للصنف ${item.الصنف}: المتوفر ${item.الكمية_المتبقية}، المطلوب ${value}`);
       return;
     }
     newDetails[index] = {
       ...newDetails[index],
-      [field]: field === 'quantity' ? parseInt(value) || 0 : field === 'unit_price' ? parseFloat(value) || 0 : value
+      [field]: field === 'الكمية' ? parseInt(value) || 0 : field === 'serial_الوحدة' ? parseFloat(value) || 0 : value
     };
     setDetails(newDetails);
   };
 
   const submit = async () => {
-    if (!user?.id) {
-      setError("بيانات المستخدم غير صالحة");
+    if (!isAuthenticated || !user?.id) {
+      setError("يجب تسجيل الدخول أولاً");
+      navigate('/login');
       return;
     }
     if (!party) {
@@ -643,84 +1488,31 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
     }
     setSubmitting(true);
     try {
-      // Generate invoice number
-      const invoiceNumber = `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
-      const invoiceData = {
-        invoice_number: invoiceNumber,
-        invoice_type: type,
+      const payload = {
+        type,
         client_name: type === "SALE" ? party : null,
         client_phone: type === "SALE" ? clientPhone : null,
         supplier_name: type === "PURCHASE" ? party : null,
         recipient: type === "FACTORY_DISPATCH" ? party : null,
-        details: details,
+        details,
+        user_id: user.id,
         notes: notes || '',
         total_amount: type !== 'FACTORY_DISPATCH' ? total : 0,
-        created_by: user.id,
-        created_by_username: user.username,
-        created_at: Timestamp.now(),
-        updated_at: Timestamp.now()
+        created_by_username: user.username || 'غير معروف'
       };
-
       if (isEdit) {
         if (!initialData?.id) {
           throw new Error("معرف الفاتورة غير صالح");
         }
-        // Restore original quantities first
-        if (initialData.details) {
-          const restorePromises = initialData.details.map(async (detail) => {
-            if (detail.stock_id) {
-              const stockRef = doc(db, 'warehouseItems', detail.stock_id);
-              try {
-                const stockDoc = await getDoc(stockRef);
-                if (stockDoc.exists()) {
-                  const stockData = stockDoc.data();
-                  const newQuantity = (stockData.remaining_quantity || 0) + parseNumber(detail.quantity);
-                  await updateDoc(stockRef, {
-                    remaining_quantity: newQuantity,
-                    updatedAt: Timestamp.now()
-                  });
-                }
-              } catch (stockErr) {
-                console.error('Error restoring stock:', stockErr);
-              }
-            }
-          });
-          await Promise.all(restorePromises);
-        }
-
-        // Update invoice
-        invoiceData.updated_at = Timestamp.now();
-        await updateDoc(doc(db, 'invoices', initialData.id), invoiceData);
+        payload.original_details = initialData.details || [];
+        await firebaseService.updateInvoice(initialData.id, payload);
       } else {
-        await addDoc(collection(db, 'invoices'), invoiceData);
+        await firebaseService.createInvoice(payload);
       }
-
-      // Update stock quantities in main inventory only
-      const updatePromises = details.map(async (detail) => {
-        if (detail.stock_id && (type === 'SALE' || type === 'FACTORY_DISPATCH')) {
-          const stockRef = doc(db, 'warehouseItems', detail.stock_id);
-          try {
-            const stockDoc = await getDoc(stockRef);
-            if (stockDoc.exists()) {
-              const stockData = stockDoc.data();
-              const newQuantity = (stockData.remaining_quantity || 0) - parseNumber(detail.quantity);
-              await updateDoc(stockRef, {
-                remaining_quantity: Math.max(0, newQuantity),
-                updatedAt: Timestamp.now()
-              });
-            }
-          } catch (stockErr) {
-            console.error('Error updating stock:', stockErr);
-          }
-        }
-      });
-
-      await Promise.all(updatePromises);
       onCreated();
     } catch (err) {
-      console.error('Firebase Error:', err);
-      setError(err.message || 'حدث خطأ غير متوقع');
+      console.error('API Error:', err);
+      setError(err.response?.data?.message || err.message || 'حدث خطأ غير متوقع');
     } finally {
       setSubmitting(false);
     }
@@ -729,6 +1521,8 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
   return (
     <div className="space-y-4 font-tajawal">
       {error && <div className="text-sm text-red-600 p-2 bg-red-50 rounded-md">{error}</div>}
+      
+      {/* Invoice Type and Party Info */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">نوع الفاتورة</label>
@@ -770,6 +1564,8 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
           </div>
         )}
       </div>
+
+      {/* Notes */}
       <div>
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ملاحظات</label>
         <textarea
@@ -780,16 +1576,28 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
           rows={3}
         />
       </div>
+
+      {/* Items Section */}
       <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
         <div className="flex justify-between items-center mb-2">
           <h3 className="text-md font-semibold text-gray-800 dark:text-white">الأصناف</h3>
-          <Button
-            onClick={() => setShowItemForm(!showItemForm)}
-            className="flex items-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
-          >
-            {showItemForm ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-            {showItemForm ? 'إخفاء' : 'إضافة صنف'}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              onClick={() => setShowItemsManagement(true)}
+              variant="outline"
+              className="flex items-center gap-2"
+            >
+              <Package className="w-4 h-4" />
+              إدارة الأصناف
+            </Button>
+            <Button
+              onClick={() => setShowItemForm(!showItemForm)}
+              className="flex items-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+            >
+              {showItemForm ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              {showItemForm ? 'إخفاء' : 'إضافة صنف'}
+            </Button>
+          </div>
         </div>
        
         {showItemForm && (
@@ -818,23 +1626,18 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
                 </thead>
                 <tbody>
                   {filteredItems.map(item => (
-                    <tr key={item.id} className="border-b border-gray-200 dark:border-gray-600">
-                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.item_name || '-'}</td>
-                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.item_code || '-'}</td>
-                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.color || '-'}</td>
-                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.remaining_quantity || 0}</td>
+                    <tr key={item.id} className="border-b border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600">
+                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.الصنف || '-'}</td>
+                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.الكود || '-'}</td>
+                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.اللون || '-'}</td>
+                      <td className="p-2 text-gray-700 dark:text-gray-300">{item.الكمية_المتبقية || 0}</td>
                       {type !== 'FACTORY_DISPATCH' && (
-                        <td className="p-2 text-gray-700 dark:text-gray-300">{parseNumber(item.unit_price).toFixed(2)}</td>
+                        <td className="p-2 text-gray-700 dark:text-gray-300">{formatCurrency(item.سعر_الوحدة)}</td>
                       )}
                       <td className="p-2">
                         <Button
                           size="sm"
-                          onClick={() => {
-                            setSelectedItem(String(item.id));
-                            setPrice(item.unit_price || '');
-                            setUnit(item.unit || '');
-                            setItemNotes('');
-                          }}
+                          onClick={() => handleItemSelect(item)}
                           className="bg-teal-500 hover:bg-teal-600 text-white"
                         >
                           اختر
@@ -845,6 +1648,7 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
                 </tbody>
               </table>
             </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">الصنف</label>
@@ -853,8 +1657,8 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
                   onChange={(e) => {
                     const item = stockItems.find(s => String(s.id) === String(e.target.value));
                     setSelectedItem(e.target.value);
-                    setPrice(item?.unit_price || '');
-                    setUnit(item?.unit || '');
+                    setPrice(item?.سعر_الوحدة || '');
+                    setUnit('قطعة');
                     setItemNotes('');
                   }}
                   className="p-2 border rounded w-full bg-white dark:bg-gray-700 text-gray-800 dark:text-white"
@@ -862,7 +1666,7 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
                   <option value="">اختر صنف</option>
                   {stockItems.map(item => (
                     <option key={item.id} value={item.id}>
-                      {item.item_name} {item.color ? `(${item.color})` : ''} {item.item_code ? `[${item.item_code}]` : ''}
+                      {item.الصنف} {item.اللون ? `(${item.اللون})` : ''} {item.الكود ? `[${item.الكود}]` : ''}
                     </option>
                   ))}
                 </select>
@@ -922,6 +1726,8 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
           </div>
         )}
       </div>
+
+      {/* Items List */}
       {details.length > 0 && (
         <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
           <h3 className="text-md font-semibold text-gray-800 dark:text-white mb-2">الأصناف المضافة</h3>
@@ -950,15 +1756,15 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
               <tbody>
                 {details.map((detail, index) => (
                   <tr key={index} className="border-b border-gray-200 dark:border-gray-600">
-                    <td className="p-3 text-gray-700 dark:text-gray-300">{detail.item_name || '-'}</td>
-                    <td className="p-3 text-gray-700 dark:text-gray-300">{detail.item_code || '-'}</td>
-                    <td className="p-3 text-gray-700 dark:text-gray-300">{detail.color || '-'}</td>
+                    <td className="p-3 text-gray-700 dark:text-gray-300">{detail.الصنف || '-'}</td>
+                    <td className="p-3 text-gray-700 dark:text-gray-300">{detail.الكود || '-'}</td>
+                    <td className="p-3 text-gray-700 dark:text-gray-300">{detail.اللون || '-'}</td>
                     <td className="p-3">
                       <Input
                         type="number"
                         min="1"
-                        value={detail.quantity}
-                        onChange={(e) => updateDetail(index, 'quantity', e.target.value)}
+                        value={detail.الكمية}
+                        onChange={(e) => updateDetail(index, 'الكمية', e.target.value)}
                         className="p-2 border rounded w-20 text-center"
                       />
                     </td>
@@ -968,28 +1774,28 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
                           <Input
                             type="number"
                             step="0.01"
-                            value={detail.unit_price}
-                            onChange={(e) => updateDetail(index, 'unit_price', e.target.value)}
+                            value={detail.serial_الوحدة}
+                            onChange={(e) => updateDetail(index, 'serial_الوحدة', e.target.value)}
                             className="p-2 border rounded w-24 text-center"
                           />
                         </td>
                         <td className="p-3 text-gray-700 dark:text-gray-300">
-                          {(parseNumber(detail.quantity) * parseNumber(detail.unit_price)).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          {formatCurrency(parseNumber(detail.الكمية) * parseNumber(detail.serial_الوحدة))}
                         </td>
                       </>
                     ) : (
                       <>
                         <td className="p-3">
                           <Input
-                            value={detail.unit}
-                            onChange={(e) => updateDetail(index, 'unit', e.target.value)}
+                            value={detail.الوحدة}
+                            onChange={(e) => updateDetail(index, 'الوحدة', e.target.value)}
                             className="p-2 border rounded w-24 text-center"
                           />
                         </td>
                         <td className="p-3">
                           <Input
-                            value={detail.notes}
-                            onChange={(e) => updateDetail(index, 'notes', e.target.value)}
+                            value={detail.ملاحظات}
+                            onChange={(e) => updateDetail(index, 'ملاحظات', e.target.value)}
                             className="p-2 border rounded w-32 text-center"
                           />
                         </td>
@@ -1018,7 +1824,7 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
                     <>
                       <td className="p-3"></td>
                       <td className="p-3 text-right font-bold text-gray-800 dark:text-white">
-                        {total.toLocaleString('en-US', { minimumFractionDigits: 2 })} جنيه
+                        {formatCurrency(total)}
                       </td>
                     </>
                   )}
@@ -1029,10 +1835,12 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
           </div>
         </div>
       )}
+
+      {/* Submit Buttons */}
       <div className="flex gap-3">
         <Button
           onClick={submit}
-          disabled={submitting}
+          disabled={submitting || !isAuthenticated}
           className="flex-1 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
         >
           {submitting ? 'جاري الحفظ...' : isEdit ? 'تحديث الفاتورة' : 'إنشاء الفاتورة'}
@@ -1045,6 +1853,13 @@ function CreateInvoiceForm({ clients, suppliers, stockItems, user, onCreated, on
           إلغاء
         </Button>
       </div>
+
+      {/* Items Management Modal */}
+      <ItemsManagement
+        onItemSelect={handleItemSelect}
+        showItemsManagement={showItemsManagement}
+        setShowItemsManagement={setShowItemsManagement}
+      />
     </div>
   );
 }
@@ -1065,70 +1880,53 @@ export default function InvoiceSystemRedesign() {
   const [clientSearch, setClientSearch] = useState("");
   const [isReturnDialogOpen, setIsReturnDialogOpen] = useState(false);
   const [selectedForReturn, setSelectedForReturn] = useState(null);
+  const navigate = useNavigate();
+  const { user, isAuthenticated, loading: authLoading, initialized } = useAuth();
   const printRef = useRef();
 
-  // Mock user data (replace with actual user management)
-  const user = {
-    id: 'manager-1',
-    username: 'المدير',
-    role: 'manager' // or 'superadmin'
-  };
-
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (isAuthenticated && initialized && !authLoading) {
+      fetchData();
+    } else if (!isAuthenticated && initialized) {
+      setLoading(false);
+      setError("يرجى تسجيل الدخول للوصول إلى نظام الفواتير");
+      navigate('/login');
+    }
+  }, [isAuthenticated, initialized, authLoading, navigate]);
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      
-      // Fetch invoices - SIMPLE QUERY without complex constraints
-      const invoicesQuery = query(
-        collection(db, 'invoices'), 
-        orderBy('created_at', 'desc')
-      );
-      const invoicesSnapshot = await getDocs(invoicesQuery);
-      const invoicesData = invoicesSnapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      }));
-      setInvoices(invoicesData);
+      // Validate Firebase connection first
+      try {
+        firebaseService.validateDb();
+      } catch (dbError) {
+        setError("خطأ في الاتصال بقاعدة البيانات. يرجى التحقق من إعدادات Firebase.");
+        return;
+      }
 
-      // Fetch stock items - SIMPLE QUERY without complex filters
-      const stockQuery = query(
-        collection(db, 'warehouseItems'), 
-        orderBy('createdAt', 'desc')
-      );
-      const stockSnapshot = await getDocs(stockQuery);
-      const stockData = stockSnapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      }));
-      setStockItems(stockData);
-
-      // Extract clients and suppliers from invoices
-      const clientsMap = new Map();
-      const suppliersMap = new Map();
-
-      invoicesData.forEach(invoice => {
-        if (invoice.client_name && invoice.client_phone) {
-          clientsMap.set(invoice.client_phone, {
-            name: invoice.client_name,
-            phone: invoice.client_phone,
-            type: 'عادي',
-            notes: `آخر فاتورة: ${invoice.invoice_number}`
-          });
-        }
-        if (invoice.supplier_name) {
-          suppliersMap.set(invoice.supplier_name, {
-            name: invoice.supplier_name,
-            type: 'مورد'
-          });
-        }
-      });
-
-      setClients(Array.from(clientsMap.values()));
-      setSuppliers(Array.from(suppliersMap.values()));
+      const [invoicesRes, stockRes, clientsRes, suppliersRes] = await Promise.all([
+        firebaseService.getInvoices().catch(err => {
+          console.error('Error fetching invoices:', err);
+          return [];
+        }),
+        firebaseService.getStockItems().catch(err => {
+          console.error('Error fetching stock items:', err);
+          return [];
+        }),
+        firebaseService.getClients().catch(err => {
+          console.error('Error fetching clients:', err);
+          return [];
+        }),
+        firebaseService.getSuppliers().catch(err => {
+          console.error('Error fetching suppliers:', err);
+          return [];
+        }),
+      ]);
+      setInvoices(invoicesRes || []);
+      setStockItems(stockRes || []);
+      setClients(clientsRes || []);
+      setSuppliers(suppliersRes || []);
       setError(null);
     } catch (err) {
       console.error('Fetch Error:', err);
@@ -1176,37 +1974,7 @@ export default function InvoiceSystemRedesign() {
   const handleDeleteInvoice = async (invoiceId) => {
     if (window.confirm('هل أنت متأكد من حذف هذه الفاتورة؟')) {
       try {
-        // First restore stock quantities
-        const invoiceDocRef = doc(db, 'invoices', invoiceId);
-        const invoiceDocSnap = await getDoc(invoiceDocRef);
-        
-        if (invoiceDocSnap.exists()) {
-          const invoiceData = invoiceDocSnap.data();
-          if (invoiceData.details && (invoiceData.invoice_type === 'SALE' || invoiceData.invoice_type === 'FACTORY_DISPATCH')) {
-            const restorePromises = invoiceData.details.map(async (detail) => {
-              if (detail.stock_id) {
-                const stockRef = doc(db, 'warehouseItems', detail.stock_id);
-                try {
-                  const stockDoc = await getDoc(stockRef);
-                  if (stockDoc.exists()) {
-                    const stockData = stockDoc.data();
-                    const newQuantity = (stockData.remaining_quantity || 0) + parseNumber(detail.quantity);
-                    await updateDoc(stockRef, {
-                      remaining_quantity: newQuantity,
-                      updatedAt: Timestamp.now()
-                    });
-                  }
-                } catch (stockErr) {
-                  console.error('Error restoring stock:', stockErr);
-                }
-              }
-            });
-            await Promise.all(restorePromises);
-          }
-        }
-
-        // Then delete the invoice
-        await deleteDoc(doc(db, 'invoices', invoiceId));
+        await firebaseService.deleteInvoice(invoiceId);
         fetchData();
       } catch (err) {
         console.error('Delete Error:', err);
@@ -1220,49 +1988,39 @@ export default function InvoiceSystemRedesign() {
       setError("لا يمكن إرسال الفاتورة عبر واتساب: بيانات الفاتورة غير صالحة");
       return;
     }
-
     let message;
     const displayType = getInvoiceTypeDisplay(invoice.invoice_type);
-    
     if (invoice.invoice_type === 'FACTORY_DISPATCH') {
       const itemsList = invoice.details.map((d, index) =>
-        `${index + 1}. الصنف: ${d.item_name || '-'}\n الكود: ${d.item_code || '-'}\n اللون: ${d.color || '-'}\n الوحدة: ${d.unit || '-'}\n الكمية: ${d.quantity || 0}\n ملاحظات: ${d.notes || '-'}`
+        `${index + 1}. الصنف: ${d.الصنف || '-'}\n الكود: ${d.الكود || '-'}\n اللون: ${d.اللون || '-'}\n الوحدة: ${d.الوحدة || '-'}\n الكمية: ${d.الكمية || 0}\n ملاحظات: ${d.ملاحظات || '-'}`
       ).join('\n\n');
-      
       message = `إذن تسليم زجاج رقم ${invoice.invoice_number || 'غير متوفر'}
-التاريخ: ${formatDate(invoice.created_at)}
+التاريخ: ${formatDate(invoice.invoice_date)}
 منصرف إلى: ${invoice.recipient || 'غير متوفر'}
 أنشأها: ${invoice.created_by_username || 'غير متوفر'}
-
 الأصناف:
 ${itemsList}
-
 ملاحظات: ${invoice.notes || 'لا توجد'}`;
     } else {
-      const total = invoice.details.reduce((sum, d) => sum + (parseNumber(d.quantity) * parseNumber(d.unit_price)), 0);
+      const total = invoice.details.reduce((sum, d) => sum + (parseNumber(d.الكمية) * parseNumber(d.serial_الوحدة)), 0);
       const itemsList = invoice.details.map((d, index) =>
-        `${index + 1}. الصنف: ${d.item_name || '-'}\n الكود: ${d.item_code || '-'}\n اللون: ${d.color || '-'}\n الكمية: ${d.quantity || 0}\n سعر الوحدة: ${formatCurrency(d.unit_price)} جنيه\n الإجمالي: ${formatCurrency(parseNumber(d.quantity) * parseNumber(d.unit_price))} جنيه`
+        `${index + 1}. الصنف: ${d.الصنف || '-'}\n الكود: ${d.الكود || '-'}\n اللون: ${d.اللون || '-'}\n الكمية: ${d.الكمية || 0}\n سعر الوحدة: ${formatCurrency(d.serial_الوحدة)} جنيه\n الإجمالي: ${formatCurrency(parseNumber(d.الكمية) * parseNumber(d.serial_الوحدة))} جنيه`
       ).join('\n\n');
-      
       message = `فاتورة ${displayType} رقم ${invoice.invoice_number || 'غير متوفر'}
-التاريخ: ${formatDate(invoice.created_at)}
+التاريخ: ${formatDate(invoice.invoice_date)}
 العميل: ${invoice.client_name || 'غير متوفر'}
 ${invoice.invoice_type === 'SALE' ? `رقم هاتف العميل: ${invoice.client_phone || 'غير متوفر'}\n` : ''}المورد: ${invoice.supplier_name || 'غير متوفر'}
 أنشأها: ${invoice.created_by_username || 'غير متوفر'}
-
 الأصناف:
 ${itemsList}
-
 الإجمالي الكلي: ${formatCurrency(total)} جنيه
 ملاحظات: ${invoice.notes || 'لا توجد'}`;
     }
-
     const phoneNumber = invoice.invoice_type === 'SALE' && invoice.client_phone ?
       invoice.client_phone.replace(/\D/g, '') : '';
     const whatsappUrl = phoneNumber ?
       `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}` :
       `https://wa.me/?text=${encodeURIComponent(message)}`;
-    
     window.open(whatsappUrl, '_blank');
   };
 
@@ -1361,448 +2119,458 @@ ${itemsList}
             }
           `}
         </style>
-
-        {/* Mobile Header */}
-        <div className="md:hidden flex justify-between items-center mb-4">
-          <h1 className="text-xl font-bold text-gray-800 dark:text-white">نظام الفواتير</h1>
-          <Button
-            variant="ghost"
-            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            className="p-2"
-          >
-            {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
-          </Button>
-        </div>
-
-        {/* Main Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="p-3 md:p-4 rounded-lg bg-gradient-to-br from-teal-500 to-emerald-500 text-white shadow">
-              <FileText size={24} className="md:size-7" />
-            </div>
-            <div className="hidden md:block">
-              <h1 className="text-2xl font-semibold text-gray-800 dark:text-white">نظام إدارة الفواتير</h1>
-              <p className="text-sm text-gray-500 dark:text-gray-400">إدارة الفواتير، العملاء، والمخزون بكفاءة</p>
-            </div>
-          </div>
-          <div className="hidden md:flex items-center gap-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">مرحباً، {user?.username || 'غير متوفر'}</span>
-          </div>
-          <div className={`${isMobileMenuOpen ? 'flex' : 'hidden'} md:flex flex-col md:flex-row items-stretch md:items-center gap-2 w-full md:w-auto`}>
-            <div className="relative flex-grow">
-              <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="ابحث برقم فاتورة أو اسم أو رقم هاتف أو اسم المستخدم"
-                className="pl-10 pr-4 w-full"
-              />
-            </div>
+        {!isAuthenticated && (
+          <div className="text-center text-red-500 dark:text-red-400">
+            {error}
             <Button
-              onClick={() => {
-                setIsCreateOpen(true);
-                setSelected(null);
-              }}
-              className="flex items-center justify-center gap-2 mt-2 md:mt-0 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+              onClick={() => navigate('/login')}
+              className="mt-4 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
             >
-              <PlusCircle size={16} /> إضافة فاتورة
+              تسجيل الدخول
             </Button>
           </div>
-        </div>
-
-        {/* Mobile Stats Cards */}
-        <div className="mobile-stats md:hidden space-y-4">
-          <Card className="bg-white dark:bg-gray-800 shadow-md">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إحصائيات سريعة</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                  <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي الفواتير</div>
-                  <div className="text-xl font-bold text-gray-800 dark:text-white">{invoices.length}</div>
+        )}
+        {isAuthenticated && (
+          <>
+            {/* Mobile Header */}
+            <div className="md:hidden flex justify-between items-center mb-4">
+              <h1 className="text-xl font-bold text-gray-800 dark:text-white">نظام الفواتير</h1>
+              <Button
+                variant="ghost"
+                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                className="p-2"
+              >
+                {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+              </Button>
+            </div>
+            {/* Main Header */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="p-3 md:p-4 rounded-lg bg-gradient-to-br from-teal-500 to-emerald-500 text-white shadow">
+                  <FileText size={24} className="md:size-7" />
                 </div>
-                <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                  <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي المبيعات</div>
-                  <div className="text-xl font-bold text-gray-800 dark:text-white">{formatCurrency(totalSales)} جنيه</div>
+                <div className="hidden md:block">
+                  <h1 className="text-2xl font-semibold text-gray-800 dark:text-white">نظام إدارة الفواتير</h1>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">إدارة الفواتير، العملاء، والمخزون بكفاءة</p>
                 </div>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-white dark:bg-gray-800 shadow-md">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إنشاء فاتورة جديدة</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-col gap-3">
+              <div className="hidden md:flex items-center gap-2">
+                <span className="text-sm text-gray-600 dark:text-gray-400">مرحباً، {user?.username || 'غير متوفر'}</span>
+              </div>
+              <div className={`${isMobileMenuOpen ? 'flex' : 'hidden'} md:flex flex-col md:flex-row items-stretch md:items-center gap-2 w-full md:w-auto`}>
+                <div className="relative flex-grow">
+                  <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="ابحث برقم فاتورة أو اسم أو رقم هاتف أو اسم المستخدم"
+                    className="pl-10 pr-4 w-full"
+                  />
+                </div>
                 <Button
                   onClick={() => {
                     setIsCreateOpen(true);
                     setSelected(null);
                   }}
-                  className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+                  className="flex items-center justify-center gap-2 mt-2 md:mt-0 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
                 >
-                  <PlusCircle size={16} /> فاتورة جديدة
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={fetchData}
-                  className="w-full border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-                >
-                  تحديث البيانات
+                  <PlusCircle size={16} /> إضافة فاتورة
                 </Button>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-white dark:bg-gray-800 shadow-md">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">الأطراف</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">العملاء:</span>
-                  <strong className="text-gray-800 dark:text-white">{invoiceClients.length}</strong>
-                </div>
-                <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">الموردون:</span>
-                  <strong className="text-gray-800 dark:text-white">{suppliers.length}</strong>
-                </div>
-                <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">الأصناف:</span>
-                  <strong className="text-gray-800 dark:text-white">{stockItems.length}</strong>
-                </div>
+            </div>
+            {/* Mobile Stats Cards */}
+            <div className="mobile-stats md:hidden space-y-4">
+              <Card className="bg-white dark:bg-gray-800 shadow-md">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إحصائيات سريعة</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                      <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي الفواتير</div>
+                      <div className="text-xl font-bold text-gray-800 dark:text-white">{invoices.length}</div>
+                    </div>
+                    <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                      <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي المبيعات</div>
+                      <div className="text-xl font-bold text-gray-800 dark:text-white">{formatCurrency(totalSales)} جنيه</div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="bg-white dark:bg-gray-800 shadow-md">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إنشاء فاتورة جديدة</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col gap-3">
+                    <Button
+                      onClick={() => {
+                        setIsCreateOpen(true);
+                        setSelected(null);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+                    >
+                      <PlusCircle size={16} /> فاتورة جديدة
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={fetchData}
+                      className="w-full border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
+                    >
+                      تحديث البيانات
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="bg-white dark:bg-gray-800 shadow-md">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">الأطراف</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                      <span className="text-sm text-gray-500 dark:text-gray-400">العملاء:</span>
+                      <strong className="text-gray-800 dark:text-white">{invoiceClients.length}</strong>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                      <span className="text-sm text-gray-500 dark:text-gray-400">الموردون:</span>
+                      <strong className="text-gray-800 dark:text-white">{suppliers.length}</strong>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                      <span className="text-sm text-gray-500 dark:text-gray-400">الأصناف:</span>
+                      <strong className="text-gray-800 dark:text-white">{stockItems.length}</strong>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsClientListOpen(true)}
+                    className="w-full mt-4 border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
+                  >
+                    عرض قائمة العملاء
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+            {/* Main Content */}
+            <div className="flex flex-col lg:flex-row gap-6">
+              {/* Invoices Table */}
+              <div className="flex-1 lg:w-2/3 invoices-table">
+                <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
+                      قائمة الفواتير ({invoices.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    {loading ? (
+                      <div className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">جاري التحميل...</div>
+                    ) : error ? (
+                      <div className="py-6 text-center text-red-500 dark:text-red-400">{error}</div>
+                    ) : filtered.length === 0 ? (
+                      <div className="py-6 text-center text-gray-500 dark:text-gray-400">لا توجد فواتير متاحة</div>
+                    ) : (
+                      <div className="table-container max-h-[60vh]">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-right sticky-header">
+                              <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">رقم</th>
+                              <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">النوع</th>
+                              <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">التاريخ</th>
+                              <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[120px]">طرف</th>
+                              <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[120px]">أنشأها</th>
+                              <th className="p-3 text-right text-gray-800 dark:text-white font-bold min-w-[100px]">الإجمالي</th>
+                              <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[140px] text-center">إجراءات</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map((inv) => (
+                              <tr
+                                key={inv.id}
+                                className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-700"
+                                onClick={() => setSelected(inv)}
+                              >
+                                <td className="p-3 text-gray-700 dark:text-gray-300">{inv.invoice_number || 'غير متوفر'}</td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                    inv.invoice_type === 'SALE' ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' :
+                                    inv.invoice_type === 'PURCHASE' ? 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' :
+                                    'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
+                                  }`}>
+                                    {getInvoiceTypeDisplay(inv.invoice_type)}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-gray-700 dark:text-gray-300">{formatDate(inv.invoice_date)}</td>
+                                <td className="p-3 text-gray-700 dark:text-gray-300">
+                                  {inv.invoice_type === 'SALE' ? inv.client_name :
+                                   inv.invoice_type === 'PURCHASE' ? inv.supplier_name :
+                                   inv.recipient || 'غير متوفر'}
+                                </td>
+                                <td className="p-3 text-gray-700 dark:text-gray-300">{inv.created_by_username || 'غير متوفر'}</td>
+                                <td className="p-3 text-right font-bold text-gray-800 dark:text-white">
+                                  {inv.invoice_type !== 'FACTORY_DISPATCH' ? `${formatCurrency(inv.total_amount)} جنيه` : '-'}
+                                </td>
+                                <td className="p-3">
+                                  <div className="action-buttons">
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelected(inv);
+                                      }}
+                                      className="action-btn text-blue-500 hover:text-blue-700"
+                                      title="عرض"
+                                    >
+                                      <Eye size={18} />
+                                    </Button>
+                                    {inv.invoice_type === 'FACTORY_DISPATCH' && (
+                                      <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleFactoryReturn(inv);
+                                        }}
+                                        className="action-btn text-purple-500 hover:text-purple-700"
+                                        title="مرتجع المصنع"
+                                      >
+                                        <RotateCcw size={18} />
+                                      </Button>
+                                    )}
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleSendWhatsApp(inv);
+                                      }}
+                                      className="action-btn text-green-500 hover:text-green-700"
+                                      title="إرسال عبر واتساب"
+                                    >
+                                      <FaWhatsapp size={18} />
+                                    </Button>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setIsCreateOpen(true);
+                                        setSelected(inv);
+                                      }}
+                                      className="action-btn text-amber-500 hover:text-amber-700"
+                                      title="تعديل"
+                                    >
+                                      <Edit size={18} />
+                                    </Button>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteInvoice(inv.id);
+                                      }}
+                                      className="action-btn text-red-500 hover:text-red-700"
+                                      title="حذف"
+                                    >
+                                      <Trash2 size={18} />
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
-              <Button
-                variant="outline"
-                onClick={() => setIsClientListOpen(true)}
-                className="w-full mt-4 border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-              >
-                عرض قائمة العملاء
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Main Content */}
-        <div className="flex flex-col lg:flex-row gap-6">
-          {/* Invoices Table */}
-          <div className="flex-1 lg:w-2/3 invoices-table">
-            <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
-                  قائمة الفواتير ({invoices.length})
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                {loading ? (
-                  <div className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">جاري التحميل...</div>
-                ) : error ? (
-                  <div className="py-6 text-center text-red-500 dark:text-red-400">{error}</div>
-                ) : filtered.length === 0 ? (
-                  <div className="py-6 text-center text-gray-500 dark:text-gray-400">لا توجد فواتير متاحة</div>
-                ) : (
-                  <div className="table-container max-h-[60vh]">
-                    <table className="w-full text-sm">
+              {/* Desktop Stats Cards */}
+              <div className="desktop-stats stats-cards lg:w-1/3 space-y-4">
+                <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إحصائيات سريعة</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي الفواتير</div>
+                        <div className="text-xl font-bold text-gray-800 dark:text-white">{invoices.length}</div>
+                      </div>
+                      <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي المبيعات</div>
+                        <div className="text-xl font-bold text-gray-800 dark:text-white">{formatCurrency(totalSales)} جنيه</div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إنشاء فاتورة جديدة</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-col gap-3">
+                      <Button
+                        onClick={() => {
+                          setIsCreateOpen(true);
+                          setSelected(null);
+                        }}
+                        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
+                      >
+                        <PlusCircle size={16} /> فاتورة جديدة
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={fetchData}
+                        className="w-full border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
+                      >
+                        تحديث البيانات
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">الأطراف</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                        <span className="text-sm text-gray-500 dark:text-gray-400">العملاء:</span>
+                        <strong className="text-gray-800 dark:text-white">{invoiceClients.length}</strong>
+                      </div>
+                      <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                        <span className="text-sm text-gray-500 dark:text-gray-400">الموردون:</span>
+                        <strong className="text-gray-800 dark:text-white">{suppliers.length}</strong>
+                      </div>
+                      <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                        <span className="text-sm text-gray-500 dark:text-gray-400">الأصناف:</span>
+                        <strong className="text-gray-800 dark:text-white">{stockItems.length}</strong>
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsClientListOpen(true)}
+                      className="w-full mt-4 border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
+                    >
+                      عرض قائمة العملاء
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+            {/* Dialogs */}
+            {selected && (
+              <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
+                <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
+                      تفاصيل {selected.invoice_type === 'FACTORY_DISPATCH' ? 'إذن التسليم' : 'الفاتورة'} - {selected.invoice_number || 'غير متوفر'}
+                    </DialogTitle>
+                    <DialogDescription>
+                      عرض تفاصيل {selected.invoice_type === 'FACTORY_DISPATCH' ? 'إذن التسليم' : 'الفاتورة'}
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="p-4 space-y-4">
+                    <InvoicePrint ref={printRef} invoice={selected} />
+                  </div>
+                </DialogContent>
+              </Dialog>
+            )}
+            <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+              <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
+                    {selected ? 'تحرير الفاتورة' : 'إنشاء فاتورة جديدة'}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {selected ? 'قم بتعديل بيانات الفاتورة' : 'أدخل بيانات الفاتورة الجديدة'}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="p-4">
+                  <CreateInvoiceForm
+                    clients={clients}
+                    suppliers={suppliers}
+                    user={user}
+                    onCreated={() => {
+                      setIsCreateOpen(false);
+                      setSelected(null);
+                      fetchData();
+                    }}
+                    onCancel={() => {
+                      setIsCreateOpen(false);
+                      setSelected(null);
+                    }}
+                    isEdit={!!selected}
+                    initialData={selected}
+                  />
+                </div>
+              </DialogContent>
+            </Dialog>
+            {isReturnDialogOpen && selectedForReturn && (
+              <FactoryReturnDialog
+                invoice={selectedForReturn}
+                user={user}
+                onSuccess={handleReturnSuccess}
+                onCancel={handleReturnCancel}
+              />
+            )}
+            <Dialog open={isClientListOpen} onOpenChange={setIsClientListOpen}>
+              <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">قائمة العملاء</DialogTitle>
+                  <DialogDescription>
+                    عرض قائمة العملاء المسجلين في النظام
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="p-4">
+                  <div className="relative mb-4">
+                    <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+                    <Input
+                      value={clientSearch}
+                      onChange={(e) => setClientSearch(e.target.value)}
+                      placeholder="ابحث عن عميل بالاسم أو الهاتف"
+                      className="pl-10 pr-4 w-full"
+                    />
+                  </div>
+                  <div className="client-table-container">
+                    <table className="w-full text-sm border-collapse">
                       <thead>
-                        <tr className="text-right sticky-header">
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">رقم</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">النوع</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[100px]">التاريخ</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[120px]">طرف</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[120px]">أنشأها</th>
-                          <th className="p-3 text-right text-gray-800 dark:text-white font-bold min-w-[100px]">الإجمالي</th>
-                          <th className="p-3 text-gray-800 dark:text-white font-bold min-w-[140px] text-center">إجراءات</th>
+                        <tr className="text-right bg-gray-100 dark:bg-gray-700">
+                          <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[150px]">الاسم</th>
+                          <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[120px]">رقم الهاتف</th>
+                          <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[80px]">النوع</th>
+                          <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[200px]">ملاحظات</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filtered.map((inv) => (
-                          <tr
-                            key={inv.id}
-                            className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-100 dark:border-gray-700"
-                            onClick={() => setSelected(inv)}
-                          >
-                            <td className="p-3 text-gray-700 dark:text-gray-300">{inv.invoice_number || 'غير متوفر'}</td>
-                            <td className="p-3">
-                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                                inv.invoice_type === 'SALE' ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' :
-                                inv.invoice_type === 'PURCHASE' ? 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' :
-                                'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
-                              }`}>
-                                {getInvoiceTypeDisplay(inv.invoice_type)}
-                              </span>
-                            </td>
-                            <td className="p-3 text-gray-700 dark:text-gray-300">{formatDate(inv.created_at)}</td>
-                            <td className="p-3 text-gray-700 dark:text-gray-300">
-                              {inv.invoice_type === 'SALE' ? inv.client_name :
-                               inv.invoice_type === 'PURCHASE' ? inv.supplier_name :
-                               inv.recipient || 'غير متوفر'}
-                            </td>
-                            <td className="p-3 text-gray-700 dark:text-gray-300">{inv.created_by_username || 'غير متوفر'}</td>
-                            <td className="p-3 text-right font-bold text-gray-800 dark:text-white">
-                              {inv.invoice_type !== 'FACTORY_DISPATCH' ? `${formatCurrency(inv.total_amount)} جنيه` : '-'}
-                            </td>
-                            <td className="p-3">
-                              <div className="action-buttons">
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelected(inv);
-                                  }}
-                                  className="action-btn text-blue-500 hover:text-blue-700"
-                                  title="عرض"
-                                >
-                                  <Eye size={18} />
-                                </Button>
-                                {inv.invoice_type === 'FACTORY_DISPATCH' && (
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleFactoryReturn(inv);
-                                    }}
-                                    className="action-btn text-purple-500 hover:text-purple-700"
-                                    title="مرتجع المصنع"
-                                  >
-                                    <RotateCcw size={18} />
-                                  </Button>
-                                )}
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleSendWhatsApp(inv);
-                                  }}
-                                  className="action-btn text-green-500 hover:text-green-700"
-                                  title="إرسال عبر واتساب"
-                                >
-                                  <FaWhatsapp size={18} />
-                                </Button>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setIsCreateOpen(true);
-                                    setSelected(inv);
-                                  }}
-                                  className="action-btn text-amber-500 hover:text-amber-700"
-                                  title="تعديل"
-                                >
-                                  <Edit size={18} />
-                                </Button>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteInvoice(inv.id);
-                                  }}
-                                  className="action-btn text-red-500 hover:text-red-700"
-                                  title="حذف"
-                                >
-                                  <Trash2 size={18} />
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                        {invoiceClients
+                          .filter(client =>
+                            (client.name || '').toLowerCase().includes(clientSearch.toLowerCase()) ||
+                            (client.phone || '').includes(clientSearch)
+                          )
+                          .map((client, i) => (
+                            <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
+                              <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-right">{client.name || 'غير متوفر'}</td>
+                              <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{client.phone || '-'}</td>
+                              <td className="p-3 border border-gray-300 dark:border-gray-600">
+                                <span className={`px-2 py-1 rounded-full text-xs ${client.type === 'vip' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-600 dark:text-gray-300'}`}>
+                                  {client.type === 'vip' ? 'VIP' : 'عادي'}
+                                </span>
+                              </td>
+                              <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{client.notes || '-'}</td>
+                            </tr>
+                          ))
+                        }
                       </tbody>
                     </table>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Desktop Stats Cards */}
-          <div className="desktop-stats stats-cards lg:w-1/3 space-y-4">
-            <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إحصائيات سريعة</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                    <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي الفواتير</div>
-                    <div className="text-xl font-bold text-gray-800 dark:text-white">{invoices.length}</div>
-                  </div>
-                  <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                    <div className="text-sm text-gray-500 dark:text-gray-400">إجمالي المبيعات</div>
-                    <div className="text-xl font-bold text-gray-800 dark:text-white">{formatCurrency(totalSales)} جنيه</div>
-                  </div>
                 </div>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">إنشاء فاتورة جديدة</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col gap-3">
-                  <Button
-                    onClick={() => {
-                      setIsCreateOpen(true);
-                      setSelected(null);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600"
-                  >
-                    <PlusCircle size={16} /> فاتورة جديدة
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={fetchData}
-                    className="w-full border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-                  >
-                    تحديث البيانات
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-white dark:bg-gray-800 shadow-md hover:shadow-lg transition-shadow duration-200">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg font-bold text-gray-800 dark:text-white">الأطراف</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-                    <span className="text-sm text-gray-500 dark:text-gray-400">العملاء:</span>
-                    <strong className="text-gray-800 dark:text-white">{invoiceClients.length}</strong>
-                  </div>
-                  <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-                    <span className="text-sm text-gray-500 dark:text-gray-400">الموردون:</span>
-                    <strong className="text-gray-800 dark:text-white">{suppliers.length}</strong>
-                  </div>
-                  <div className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
-                    <span className="text-sm text-gray-500 dark:text-gray-400">الأصناف:</span>
-                    <strong className="text-gray-800 dark:text-white">{stockItems.length}</strong>
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsClientListOpen(true)}
-                  className="w-full mt-4 border-teal-500 text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20"
-                >
-                  عرض قائمة العملاء
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-
-        {/* Dialogs */}
-        {selected && (
-          <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
-            <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
-                  تفاصيل {selected.invoice_type === 'FACTORY_DISPATCH' ? 'إذن التسليم' : 'الفاتورة'} - {selected.invoice_number || 'غير متوفر'}
-                </DialogTitle>
-              </DialogHeader>
-              <div className="p-4 space-y-4">
-                <InvoicePrint ref={printRef} invoice={selected} />
-              </div>
-            </DialogContent>
-          </Dialog>
+              </DialogContent>
+            </Dialog>
+          </>
         )}
-
-        <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-          <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">
-                {selected ? 'تحرير الفاتورة' : 'إنشاء فاتورة جديدة'}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="p-4">
-              <CreateInvoiceForm
-                clients={clients}
-                suppliers={suppliers}
-                stockItems={stockItems}
-                user={user}
-                onCreated={() => {
-                  setIsCreateOpen(false);
-                  setSelected(null);
-                  fetchData();
-                }}
-                onCancel={() => {
-                  setIsCreateOpen(false);
-                  setSelected(null);
-                }}
-                isEdit={!!selected}
-                initialData={selected}
-              />
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        {isReturnDialogOpen && selectedForReturn && (
-          <FactoryReturnDialog
-            invoice={selectedForReturn}
-            user={user}
-            onSuccess={handleReturnSuccess}
-            onCancel={handleReturnCancel}
-          />
-        )}
-
-        <Dialog open={isClientListOpen} onOpenChange={setIsClientListOpen}>
-          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="text-lg md:text-xl font-bold text-gray-800 dark:text-white">قائمة العملاء</DialogTitle>
-            </DialogHeader>
-            <div className="p-4">
-              <div className="relative mb-4">
-                <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-                <Input
-                  value={clientSearch}
-                  onChange={(e) => setClientSearch(e.target.value)}
-                  placeholder="ابحث عن عميل بالاسم أو الهاتف"
-                  className="pl-10 pr-4 w-full"
-                />
-              </div>
-              <div className="client-table-container">
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="text-right bg-gray-100 dark:bg-gray-700">
-                      <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[150px]">الاسم</th>
-                      <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[120px]">رقم الهاتف</th>
-                      <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[80px]">النوع</th>
-                      <th className="p-3 border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-white font-bold min-w-[200px]">ملاحظات</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invoiceClients
-                      .filter(client =>
-                        (client.name || '').toLowerCase().includes(clientSearch.toLowerCase()) ||
-                        (client.phone || '').includes(clientSearch)
-                      )
-                      .map((client, i) => (
-                        <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-                          <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-right">{client.name || 'غير متوفر'}</td>
-                          <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{client.phone || '-'}</td>
-                          <td className="p-3 border border-gray-300 dark:border-gray-600">
-                            <span className={`px-2 py-1 rounded-full text-xs ${client.type === 'vip' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-600 dark:text-gray-300'}`}>
-                              {client.type === 'vip' ? 'VIP' : 'عادي'}
-                            </span>
-                          </td>
-                          <td className="p-3 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">{client.notes || '-'}</td>
-                        </tr>
-                      ))
-                    }
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
     </InvoiceErrorBoundary>
   );
-}
+}  

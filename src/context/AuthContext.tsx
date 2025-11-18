@@ -29,7 +29,7 @@ import {
   onSnapshotsInSync,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { getAuth, getFirestore } from "../firebase/config";
+import { auth, db } from "../firebase/config"; // ✅ FIXED IMPORT
 import { EmailVerificationService, PasswordResetService } from "../services/firebase";
 
 // === Firebase-compatible interfaces ===
@@ -119,11 +119,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // === Lazy Firebase Initialization ===
   const initializeFirebase = async () => {
     try {
-      console.log("🚀 Initializing Firebase services in background...");
-      await Promise.all([
-        getAuth(),
-        getFirestore()
-      ]);
+      console.log("🚀 Firebase services already initialized");
       setAuthReady(true);
       console.log("✅ Firebase services ready");
     } catch (error) {
@@ -135,7 +131,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // === Enable Offline Persistence (Lazy) ===
   const enablePersistence = async () => {
     try {
-      const db = await getFirestore();
       await enableIndexedDbPersistence(db);
       console.log("💾 Persistence enabled: Firestore offline cache active");
     } catch (err: any) {
@@ -227,8 +222,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       console.log("🔄 Attempting to recover missing claims for user:", firebaseUser.uid);
       
-      const db = await getFirestore();
-      
       // Try to get user data from Firestore with fallback
       let userDoc;
       try {
@@ -318,7 +311,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     
     // Try to update Firestore in background (don't wait for it)
     try {
-      const db = await getFirestore();
       const userData = {
         uid: firebaseUser.uid,
         email: firebaseUser.email,
@@ -359,8 +351,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         return null;
       }
 
-      const db = await getFirestore();
-      
       // Try to get user data from Firestore with multiple fallbacks
       try {
         const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
@@ -449,7 +439,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // === Initialize user document ===
   const initializeUserDocument = async (firebaseUser: FirebaseUser, customClaims: any) => {
     try {
-      const db = await getFirestore();
       const rawRole = customClaims.role || 'user';
       const role = normalizeRole(rawRole) as User['role'];
       
@@ -481,7 +470,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // === Sync user document ===
   const syncUserDocument = async (userId: string, userData: User) => {
     try {
-      const db = await getFirestore();
       const cleanData: any = { 
         ...userData, 
         updatedAt: serverTimestamp() 
@@ -616,7 +604,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       console.log('🔐 Login attempt for:', email);
       
-      const auth = await getAuth();
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       
       console.log('✅ Firebase auth success, UID:', userCredential.user.uid);
@@ -665,9 +652,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const registerUser = async (name: string, email: string, password: string, role: string): Promise<RegisterResponse> => {
     try {
       console.log('🚀 Starting user registration process...');
-      
-      const auth = await getAuth();
-      const db = await getFirestore();
       
       // 1. Create Firebase auth user
       console.log('📝 Creating Firebase auth user...');
@@ -766,7 +750,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // === Logout ===
   const logout = async (): Promise<void> => {
     try {
-      const auth = await getAuth();
       await signOut(auth);
     } catch (error) {
       console.error("Logout error:", error);
@@ -794,7 +777,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (!user) return;
     const updated = { ...user.settings, ...settings };
     try {
-      const db = await getFirestore();
       await updateDoc(doc(db, "users", user.uid), { 
         settings: updated, 
         updatedAt: serverTimestamp() 
@@ -832,7 +814,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const result = await EmailVerificationService.sendVerificationEmail();
     if (result.success && user) {
       try {
-        const db = await getFirestore();
         await updateDoc(doc(db, "users", user.uid), { 
           lastVerificationSent: serverTimestamp() 
         });
@@ -849,7 +830,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const result = await EmailVerificationService.resendVerificationEmail(lastSent);
     if (result.success && user) {
       try {
-        const db = await getFirestore();
         await updateDoc(doc(db, "users", user.uid), { 
           lastVerificationSent: serverTimestamp() 
         });
@@ -880,8 +860,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     const initializeAuthListener = async () => {
       try {
-        const auth = await getAuth();
-        
         unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
           if (!mounted) return;
           
@@ -928,7 +906,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     
     const setupSyncListener = async () => {
       try {
-        const db = await getFirestore();
         unsubscribe = onSnapshotsInSync(db, () => {
           console.log("Firestore: All snapshots in sync");
         });

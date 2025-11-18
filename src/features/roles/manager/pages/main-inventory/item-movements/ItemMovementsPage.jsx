@@ -1,8 +1,21 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { debounce } from 'lodash';
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs, 
+  getDoc, 
+  doc, 
+  limit,
+  startAfter,
+  getCountFromServer
+} from 'firebase/firestore';
+import { db } from '@/firebase/config';
 
 const ItemMovementsPage = () => {
-  const [mode, setMode] = useState(localStorage.getItem('themeMode') || 'dark');
+  const [mode, setMode] = useState(() => localStorage.getItem('themeMode') || 'dark');
   const isMobile = window.innerWidth < 768;
   const [movements, setMovements] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -31,9 +44,14 @@ const ItemMovementsPage = () => {
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   const [stats, setStats] = useState([]);
   const [inventoryData, setInventoryData] = useState({});
+  const [lastDoc, setLastDoc] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+
+  const abortControllerRef = useRef(null);
+  const mountedRef = useRef(true);
 
   // Movement types from the database schema including accessory types
-  const movementTypes = [
+  const movementTypes = useMemo(() => [
     'صرف مصنع',
     'صرف خارجي',
     'مرتجع مصنع',
@@ -46,19 +64,7 @@ const ItemMovementsPage = () => {
     'فاتورة شراء',
     'فاتورة بيع',
     'فاتورة صرف مصنع',
-  ];
-
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
-
-  // Memoize expensive calculations
-  const getAuthToken = useCallback(() => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      setError('يرجى تسجيل الدخول أولاً');
-      return null;
-    }
-    return token;
-  }, []);
+  ], []);
 
   const formatDisplayDate = useCallback((dateString) => {
     if (!dateString || isNaN(new Date(dateString).getTime())) {
@@ -77,9 +83,8 @@ const ItemMovementsPage = () => {
     return new Date(date).toISOString().split('T')[0];
   }, []);
 
-  // Enhanced accessory quantity processing based on the first code
+  // Enhanced accessory quantity processing
   const processAccessoryQuantities = useCallback((movement) => {
-    // For accessory dispatches, extract detailed quantities
     if (movement.movementType === 'صرف اكسسوار' || movement.movementType === 'مرتجع اكسسوار') {
       return {
         total: movement.outgoingQuantity || movement.incomingQuantity || 0,
@@ -97,7 +102,7 @@ const ItemMovementsPage = () => {
     return null;
   }, []);
 
-  // Enhanced factory dispatch processing with carton and individual quantities
+  // Enhanced factory dispatch processing
   const processFactoryDispatchQuantities = useCallback((movement) => {
     if (movement.movementType === 'صرف مصنع' || movement.movementType === 'فاتورة صرف مصنع') {
       return {
@@ -110,68 +115,56 @@ const ItemMovementsPage = () => {
     return null;
   }, []);
 
-  // Fetch current inventory from المخزون table
+  // Fetch current inventory from inventory collection
   const fetchInventoryData = useCallback(async () => {
+    if (!mountedRef.current) return {};
+
     try {
-      const token = getAuthToken();
-      if (!token) {
-        console.log('No token available for inventory');
-        return {};
-      }
-
-      console.log('Fetching inventory data...');
-      const response = await fetch(`${API_URL}/item-movements/inventory`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Inventory data received:', data.data?.length || 0);
-        
-        if (data.success && Array.isArray(data.data)) {
-          const inventoryMap = {};
-          data.data.forEach((item) => {
-            if (item.code) {
-              inventoryMap[item.code] = {
-                cartons: item.cartons || 0,
-                individual: item.individual || 0,
-                remaining: item.remaining || 0,
-                per_carton: item.perCarton || item.per_carton || 0,
-                // Add accessory specific fields
-                pump: item.bمب || 0,
-                ring: item.حلق || 0,
-                cover: item.غطاء || 0,
-                ribbons: item.شرائط || 0,
-                stickers: item.استيكرات || 0,
-                tags: item.علامات || 0,
-              };
-            }
-          });
-          setInventoryData(inventoryMap);
-          return inventoryMap;
+      console.log('Fetching inventory data from Firebase...');
+      const inventoryRef = collection(db, 'inventory');
+      const snapshot = await getDocs(inventoryRef);
+      
+      console.log('Inventory data received:', snapshot.docs.length);
+      
+      const inventoryMap = {};
+      snapshot.forEach((doc) => {
+        const item = doc.data();
+        if (item.code) {
+          inventoryMap[item.code] = {
+            cartons: item.cartons || 0,
+            individual: item.individual || 0,
+            remaining: item.remaining || 0,
+            per_carton: item.perCarton || item.per_carton || 0,
+            pump: item.bمب || 0,
+            ring: item.حلق || 0,
+            cover: item.غطاء || 0,
+            ribbons: item.شرائط || 0,
+            stickers: item.استيكرات || 0,
+            tags: item.علامات || 0,
+          };
         }
-      } else {
-        console.warn('Inventory fetch failed with status:', response.status);
+      });
+      
+      if (mountedRef.current) {
+        setInventoryData(inventoryMap);
       }
+      return inventoryMap;
     } catch (error) {
       console.error('Inventory fetch error:', error);
+      if (mountedRef.current) {
+        setError('فشل في تحميل بيانات المخزون: ' + error.message);
+      }
     }
     return {};
-  }, [API_URL, getAuthToken]);
+  }, []);
 
-  // Enhanced movement data processing with accessory and factory dispatch details
+  // Enhanced movement data processing
   const processMovementData = useCallback((movement, inventoryMap) => {
     const currentInventory = movement.code ? inventoryMap[movement.code] : null;
     const isFactoryDispatch = movement.movementType === 'صرف مصنع' || movement.movementType === 'فاتورة صرف مصنع';
     const isAccessoryDispatch = movement.movementType === 'صرف اكسسوار' || movement.movementType === 'مرتجع اكسسوار';
 
-    // Process accessory quantities
     const accessoryQuantities = processAccessoryQuantities(movement);
-    
-    // Process factory dispatch quantities
     const factoryDispatchQuantities = processFactoryDispatchQuantities(movement);
 
     return {
@@ -200,16 +193,10 @@ const ItemMovementsPage = () => {
       notes: movement.notes || movement["ملاحظات"] || 'لا توجد ملاحظات',
       source: movement.source || movement["المصدر"] || '-',
       destination: movement.destination || movement["الوجهه"] || '-',
-      
-      // Enhanced accessory details
-      accessoryQuantities: accessoryQuantities,
+      accessoryQuantities,
       hasAccessoryDetails: isAccessoryDispatch && accessoryQuantities,
-      
-      // Enhanced factory dispatch details
-      factoryDispatchQuantities: factoryDispatchQuantities,
+      factoryDispatchQuantities,
       hasFactoryDispatchDetails: isFactoryDispatch && factoryDispatchQuantities,
-      
-      // Individual accessory fields for detailed display
       accessoryDetails: {
         pump: movement.bمب_مصروف || movement.bمب || 0,
         ring: movement.حلق_مصروف || movement.حلق || 0,
@@ -225,219 +212,287 @@ const ItemMovementsPage = () => {
     };
   }, [processAccessoryQuantities, processFactoryDispatchQuantities]);
 
-  // Fetch movements from عرض_حركة_الاصناف_الموحد view
-  const fetchMovements = useCallback(async (pageNum, limitNum, sortConfig, filtersObj) => {
+  // Build Firestore query based on filters and sort config
+  const buildQuery = useCallback((filtersObj, sortConfig, pageSize, startAfterDoc = null) => {
+    let q = collection(db, 'item_movements_unified');
+    
+    const conditions = [];
+    
+    // Apply filters
+    if (filtersObj.type) {
+      conditions.push(where('movementType', '==', filtersObj.type));
+    }
+    
+    if (filtersObj.itemName) {
+      conditions.push(where('itemName', '>=', filtersObj.itemName));
+      conditions.push(where('itemName', '<=', filtersObj.itemName + '\uf8ff'));
+    }
+    
+    if (filtersObj.code) {
+      conditions.push(where('code', '==', filtersObj.code));
+    }
+    
+    if (filtersObj.color) {
+      conditions.push(where('color', '==', filtersObj.color));
+    }
+    
+    if (filtersObj.factory) {
+      conditions.push(where('factory', '==', filtersObj.factory));
+    }
+    
+    if (filtersObj.source) {
+      conditions.push(where('source', '==', filtersObj.source));
+    }
+    
+    if (filtersObj.destination) {
+      conditions.push(where('destination', '==', filtersObj.destination));
+    }
+    
+    if (filtersObj.startDate) {
+      conditions.push(where('date', '>=', formatDateForAPI(filtersObj.startDate)));
+    }
+    
+    if (filtersObj.endDate) {
+      conditions.push(where('date', '<=', formatDateForAPI(filtersObj.endDate)));
+    }
+
+    // Apply sorting
+    const sortField = sortConfig.field === 'date' ? 'date' : sortConfig.field;
+    const sortDirection = sortConfig.direction === 'DESC' ? 'desc' : 'asc';
+    conditions.push(orderBy(sortField, sortDirection));
+
+    // Apply limit
+    conditions.push(limit(pageSize));
+
+    // Apply pagination
+    if (startAfterDoc) {
+      conditions.push(startAfter(startAfterDoc));
+    }
+
+    return query(q, ...conditions);
+  }, [formatDateForAPI]);
+
+  // Fetch movements from item_movements_unified collection
+  const fetchMovements = useCallback(async (pageNum, limitNum, sortConfig, filtersObj, reset = false) => {
+    if (!mountedRef.current) return;
+
+    // Cancel previous request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
     setLoading(true);
     setError('');
 
     try {
-      const token = getAuthToken();
-      if (!token) {
-        setError('يرجى تسجيل الدخول أولاً');
-        setLoading(false);
-        return;
-      }
-
-      // Build query parameters
-      const queryParams = new URLSearchParams({
-        page: (pageNum + 1).toString(),
-        limit: limitNum.toString(),
-        sortBy: sortConfig.field,
-        sortOrder: sortConfig.direction.toLowerCase(),
-      });
-
-      // Add filters with enhanced filtering logic
-      Object.entries(filtersObj).forEach(([key, value]) => {
-        if (value !== null && value !== '' && value !== undefined) {
-          if (value instanceof Date) {
-            queryParams.set(key, formatDateForAPI(value));
-          } else if (value.toString().trim() !== '') {
-            queryParams.set(key, value.toString().trim());
-          }
-        }
-      });
-
-      console.log('Fetching movements with params:', {
-        page: pageNum + 1,
+      console.log('Fetching movements from Firebase with params:', {
+        page: pageNum,
         limit: limitNum,
         sortBy: sortConfig.field,
         sortOrder: sortConfig.direction,
         filters: filtersObj
       });
 
-      const response = await fetch(`${API_URL}/item-movements?${queryParams}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      // Build query
+      const startAfterDoc = reset ? null : lastDoc;
+      const movementsQuery = buildQuery(filtersObj, sortConfig, limitNum, startAfterDoc);
+      
+      const snapshot = await getDocs(movementsQuery);
 
-      console.log('Response status:', response.status);
+      if (!mountedRef.current) return;
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error('انتهت صلاحية الجلسة، يرجى تسجيل الدخول مرة أخرى');
-        }
-        if (response.status === 404) {
-          throw new Error('البيانات غير متوفرة - الرابط غير صحيح');
-        }
-        throw new Error(`خطأ في الخادم: ${response.status}`);
-      }
+      console.log('Firebase Response:', snapshot.docs.length, 'documents');
 
-      const data = await response.json();
-      console.log('API Response:', data);
-
-      if (data.success) {
-        console.log('Received movements:', data.data?.length || 0);
-        
-        // Process movements with inventory data
-        const processedMovements = data.data.map(movement => 
-          processMovementData(movement, inventoryData)
-        );
-        
-        setMovements(processedMovements);
-        setTotalItems(data.pagination?.totalItems || 0);
-
-        if (processedMovements.length === 0 && (filtersObj.type || filtersObj.search)) {
+      if (snapshot.empty) {
+        if (filtersObj.type || filtersObj.search || Object.values(filtersObj).some(val => val && val !== '')) {
           setError('لا توجد نتائج تطابق معايير البحث');
-        } else if (processedMovements.length === 0) {
+        } else {
           setError('لا توجد حركات مسجلة في النظام');
         }
-      } else {
-        throw new Error(data.message || 'فشل في جلب البيانات');
+        setMovements([]);
+        setTotalItems(0);
+        setHasMore(false);
+        return;
       }
-    } catch (err) {
-      console.error('Error fetching movements:', err);
-      setError(err.message);
-      setMovements([]);
-      setTotalItems(0);
-    } finally {
-      setLoading(false);
-    }
-  }, [API_URL, getAuthToken, formatDateForAPI, processMovementData, inventoryData]);
 
+      // Process movements with inventory data
+      const movementsData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      const processedMovements = movementsData.map(movement => 
+        processMovementData(movement, inventoryData)
+      );
+
+      if (reset) {
+        setMovements(processedMovements);
+      } else {
+        setMovements(prev => [...prev, ...processedMovements]);
+      }
+
+      // Update pagination state
+      const lastVisible = snapshot.docs[snapshot.docs.length - 1];
+      setLastDoc(lastVisible);
+      setHasMore(snapshot.docs.length === limitNum);
+
+      // Get total count for first page
+      if (reset || pageNum === 0) {
+        const countQuery = buildQuery(filtersObj, sortConfig, 10000);
+        const countSnapshot = await getDocs(countQuery);
+        if (mountedRef.current) {
+          setTotalItems(countSnapshot.size);
+        }
+      }
+
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        console.log('Fetch aborted');
+        return;
+      }
+      console.error('Error fetching movements from Firebase:', err);
+      if (mountedRef.current) {
+        setError('فشل في جلب البيانات: ' + err.message);
+        setMovements([]);
+        setTotalItems(0);
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [buildQuery, processMovementData, inventoryData, lastDoc]);
+
+  // Optimized debounced fetch with proper cleanup
   const debouncedFetchMovements = useMemo(
-    () => debounce(fetchMovements, 500),
+    () => debounce((pageNum, limitNum, sortConfig, filtersObj, reset = false) => {
+      fetchMovements(pageNum, limitNum, sortConfig, filtersObj, reset);
+    }, 300),
     [fetchMovements]
   );
 
-  // Fetch stats from database
+  // Fetch stats from Firebase
   const fetchStats = useCallback(async () => {
-    try {
-      const token = getAuthToken();
-      if (!token) {
-        console.log('No token available for stats');
-        return;
-      }
+    if (!mountedRef.current) return;
 
-      console.log('Fetching stats...');
-      const response = await fetch(`${API_URL}/item-movements/stats`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+    try {
+      console.log('Fetching stats from Firebase...');
+      
+      const statsRef = collection(db, 'item_movements_unified');
+      const q = query(statsRef, limit(500)); // Reduced limit for performance
+      const snapshot = await getDocs(q);
+
+      if (!mountedRef.current) return;
+
+      const statsMap = {};
+      snapshot.forEach(doc => {
+        const movement = doc.data();
+        const type = movement.movementType;
+        
+        if (!statsMap[type]) {
+          statsMap[type] = {
+            movementType: type,
+            count: 0,
+            totalIncoming: 0,
+            totalOutgoing: 0
+          };
+        }
+        
+        statsMap[type].count++;
+        statsMap[type].totalIncoming += movement.incomingQuantity || 0;
+        statsMap[type].totalOutgoing += movement.outgoingQuantity || 0;
       });
 
-      console.log('Stats response status:', response.status);
-
-      if (!response.ok) {
-        console.warn('Stats fetch failed with status:', response.status);
-        setStats([
-          { movementType: 'صرف مصنع', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-          { movementType: 'صرف اكسسوار', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-          { movementType: 'فاتورة شراء', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-        ]);
-        return;
+      const statsArray = Object.values(statsMap);
+      if (mountedRef.current) {
+        setStats(statsArray);
       }
 
-      const data = await response.json();
-      console.log('Stats data:', data);
-
-      if (data.success && Array.isArray(data.data)) {
-        setStats(data.data);
-      } else {
-        console.warn('Invalid stats data format:', data);
-        setStats([
-          { movementType: 'صرف مصنع', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-          { movementType: 'صرف اكسسوار', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-          { movementType: 'فاتورة شراء', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-        ]);
-      }
     } catch (err) {
-      console.error('Error fetching stats:', err);
-      setStats([
-        { movementType: 'صرف مصنع', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-        { movementType: 'صرف اكسسوار', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-        { movementType: 'فاتورة شراء', count: 0, totalIncoming: 0, totalOutgoing: 0 },
-      ]);
+      console.error('Error fetching stats from Firebase:', err);
+      if (mountedRef.current) {
+        setStats([
+          { movementType: 'صرف مصنع', count: 0, totalIncoming: 0, totalOutgoing: 0 },
+          { movementType: 'صرف اكسسوار', count: 0, totalIncoming: 0, totalOutgoing: 0 },
+          { movementType: 'فاتورة شراء', count: 0, totalIncoming: 0, totalOutgoing: 0 },
+        ]);
+      }
     }
-  }, [API_URL, getAuthToken]);
+  }, []);
 
   // Initialize data on component mount
   useEffect(() => {
+    mountedRef.current = true;
+    
     const initializeData = async () => {
-      console.log('Initializing component data...');
+      console.log('Initializing component data with Firebase...');
       try {
-        // First fetch inventory data
         const inventory = await fetchInventoryData();
         console.log('Inventory loaded, fetching movements...');
         
-        // Then fetch movements with the inventory data
-        await fetchMovements(page, rowsPerPage, sortConfig, filters);
-        
-        // Finally fetch stats
+        await fetchMovements(0, rowsPerPage, sortConfig, filters, true);
         await fetchStats();
         
-        console.log('All data initialized successfully');
+        console.log('All data initialized successfully with Firebase');
       } catch (error) {
-        console.error('Error initializing data:', error);
-        setError('فشل في تحميل البيانات: ' + error.message);
+        console.error('Error initializing data with Firebase:', error);
+        if (mountedRef.current) {
+          setError('فشل في تحميل البيانات: ' + error.message);
+        }
       }
     };
 
     initializeData();
-  }, []); // Empty dependency array - only run on mount
 
-  const handleChangePage = (newPage) => {
+    return () => {
+      mountedRef.current = false;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      debouncedFetchMovements.cancel();
+    };
+  }, []);
+
+  const handleChangePage = useCallback((newPage) => {
     console.log('Changing page to:', newPage);
     setPage(newPage);
-    fetchMovements(newPage, rowsPerPage, sortConfig, filters);
-  };
+    fetchMovements(newPage, rowsPerPage, sortConfig, filters, true);
+  }, [rowsPerPage, sortConfig, filters, fetchMovements]);
 
-  const handleChangeRowsPerPage = (event) => {
+  const handleChangeRowsPerPage = useCallback((event) => {
     const newRowsPerPage = parseInt(event.target.value, 10);
     console.log('Changing rows per page to:', newRowsPerPage);
     setRowsPerPage(newRowsPerPage);
     setPage(0);
-    fetchMovements(0, newRowsPerPage, sortConfig, filters);
-  };
+    setLastDoc(null);
+    fetchMovements(0, newRowsPerPage, sortConfig, filters, true);
+  }, [sortConfig, filters, fetchMovements]);
 
-  const handleSort = (field) => {
+  const handleSort = useCallback((field) => {
     const newSortConfig = {
       field,
       direction: sortConfig.field === field && sortConfig.direction === 'ASC' ? 'DESC' : 'ASC',
     };
     console.log('Sorting by:', newSortConfig);
     setSortConfig(newSortConfig);
-    fetchMovements(page, rowsPerPage, newSortConfig, filters);
-  };
+    setPage(0);
+    setLastDoc(null);
+    fetchMovements(0, rowsPerPage, newSortConfig, filters, true);
+  }, [sortConfig, rowsPerPage, filters, fetchMovements]);
 
   // Enhanced filtering with better type handling
-  const handleFilterChange = (field, value) => {
+  const handleFilterChange = useCallback((field, value) => {
     console.log('Filter changed:', field, value);
     const newFilters = { ...filters, [field]: value };
     setFilters(newFilters);
     setPage(0);
+    setLastDoc(null);
     
-    // Apply immediate filtering for certain fields
-    if (field === 'type' || field === 'search') {
-      debouncedFetchMovements(0, rowsPerPage, sortConfig, newFilters);
-    } else {
-      debouncedFetchMovements(0, rowsPerPage, sortConfig, newFilters);
-    }
-  };
+    debouncedFetchMovements(0, rowsPerPage, sortConfig, newFilters, true);
+  }, [filters, rowsPerPage, sortConfig, debouncedFetchMovements]);
 
-  const clearFilters = () => {
+  const clearFilters = useCallback(() => {
     console.log('Clearing all filters');
     const clearedFilters = {
       search: '',
@@ -453,83 +508,69 @@ const ItemMovementsPage = () => {
     };
     setFilters(clearedFilters);
     setPage(0);
-    fetchMovements(0, rowsPerPage, sortConfig, clearedFilters);
-  };
+    setLastDoc(null);
+    fetchMovements(0, rowsPerPage, sortConfig, clearedFilters, true);
+  }, [rowsPerPage, sortConfig, fetchMovements]);
 
-  const handleViewDetails = async (movement) => {
+  const handleViewDetails = useCallback(async (movement) => {
     try {
-      const token = getAuthToken();
-      if (!token) {
-        setError('يرجى تسجيل الدخول أولاً');
-        return;
-      }
-
       console.log('Fetching details for movement:', movement.id);
-      const response = await fetch(`${API_URL}/item-movements/${movement.id}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      
+      const movementRef = doc(db, 'item_movements_unified', movement.id);
+      const movementDoc = await getDoc(movementRef);
 
-      if (!response.ok) {
-        throw new Error(`خطأ في الخادم: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('Movement details response:', data);
-
-      if (data.success) {
-        const processedMovement = processMovementData(data.data, inventoryData);
+      if (movementDoc.exists()) {
+        const movementData = {
+          id: movementDoc.id,
+          ...movementDoc.data()
+        };
+        const processedMovement = processMovementData(movementData, inventoryData);
         setSelectedMovement(processedMovement);
         setDetailDialogOpen(true);
       } else {
-        throw new Error(data.message || 'فشل في تحميل التفاصيل');
+        throw new Error('الحركة غير موجودة');
       }
     } catch (err) {
-      console.error('Error loading details:', err);
+      console.error('Error loading details from Firebase:', err);
       setError('فشل في تحميل التفاصيل: ' + err.message);
     }
-  };
+  }, [processMovementData, inventoryData]);
 
-  const handleExport = async () => {
+  const handleExport = useCallback(async () => {
     try {
-      const token = getAuthToken();
-      if (!token) {
-        setError('يرجى تسجيل الدخول أولاً');
-        return;
+      if (movements.length === 0) {
+        throw new Error('لا توجد بيانات للتصدير');
       }
 
-      const queryParams = new URLSearchParams();
+      const headers = [
+        'المعرف', 'الصنف', 'الكود', 'اللون', 'نوع الحركة', 
+        'الكمية الداخلة', 'الكمية الخارجة', 'الرصيد', 
+        'المصنع', 'التاريخ', 'المستخدم', 'المصدر', 'الوجهة'
+      ];
 
-      // Add filters to export
-      Object.entries(filters).forEach(([key, value]) => {
-        if (value !== null && value !== '' && value !== undefined) {
-          if (value instanceof Date) {
-            queryParams.set(key, formatDateForAPI(value));
-          } else if (value.toString().trim() !== '') {
-            queryParams.set(key, value.toString().trim());
-          }
-        }
-      });
+      const csvData = movements.map(movement => [
+        movement.id,
+        movement.itemName,
+        movement.code,
+        movement.color,
+        movement.movementType,
+        movement.incomingQuantity,
+        movement.outgoingQuantity,
+        movement.currentRemaining,
+        movement.factory,
+        formatDisplayDate(movement.date),
+        movement.user,
+        movement.source,
+        movement.destination
+      ]);
 
-      console.log('Exporting with params:', Object.fromEntries(queryParams));
-      const response = await fetch(`${API_URL}/item-movements/export?${queryParams}`, {
-        headers: { 
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      const csvContent = [
+        '\uFEFF' + headers.join(','), // BOM for Arabic support
+        ...csvData.map(row => row.map(field => `"${field}"`).join(','))
+      ].join('\n');
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Export error response:', errorText);
-        throw new Error(`خطأ في التصدير: ${response.status} - ${errorText}`);
-      }
-
-      const blob = await response.blob();
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       
-      // Check if blob is valid
       if (blob.size === 0) {
         throw new Error('الملف المُصدر فارغ');
       }
@@ -537,7 +578,7 @@ const ItemMovementsPage = () => {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `movements-export-${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `movements-export-${new Date().toISOString().split('T')[0]}.csv`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -548,18 +589,20 @@ const ItemMovementsPage = () => {
       console.error('Export error:', err);
       setError('فشل في تصدير الملف: ' + err.message);
     }
-  };
+  }, [movements, formatDisplayDate]);
 
-  const handleRefresh = () => {
-    console.log('Refreshing data...');
+  const handleRefresh = useCallback(() => {
+    console.log('Refreshing data from Firebase...');
     setError('');
+    setPage(0);
+    setLastDoc(null);
     fetchInventoryData().then(() => {
-      fetchMovements(page, rowsPerPage, sortConfig, filters);
+      fetchMovements(0, rowsPerPage, sortConfig, filters, true);
       fetchStats();
     });
-  };
+  }, [rowsPerPage, sortConfig, filters, fetchMovements, fetchStats, fetchInventoryData]);
 
-  const getMovementTypeColor = (type) => {
+  const getMovementTypeColor = useCallback((type) => {
     const colors = {
       'صرف مصنع': 'from-blue-600 to-blue-800',
       'صرف خارجي': 'from-purple-600 to-purple-800',
@@ -575,20 +618,20 @@ const ItemMovementsPage = () => {
       'فاتورة صرف مصنع': 'from-blue-600 to-blue-800',
     };
     return colors[type] || 'from-gray-600 to-gray-800';
-  };
+  }, []);
 
-  const getMovementIcon = (type) => {
+  const getMovementIcon = useCallback((type) => {
     if (type.includes('صرف') || type.includes('بيع')) {
-      return '↓'; // صادر
+      return '↓';
     } else if (type.includes('شراء') || type.includes('مرتجع')) {
-      return '↑'; // وارد
+      return '↑';
     } else {
       return '↔';
     }
-  };
+  }, []);
 
-  // Enhanced factory dispatch dropdown component
-  const FactoryDispatchDropdown = ({ factoryQuantities, movementType }) => {
+  // Memoized components
+  const FactoryDispatchDropdown = useCallback(({ factoryQuantities, movementType }) => {
     const [isOpen, setIsOpen] = useState(false);
 
     if (!factoryQuantities) {
@@ -639,10 +682,9 @@ const ItemMovementsPage = () => {
         )}
       </div>
     );
-  };
+  }, []);
 
-  // Enhanced AccessoryDetailsDropdown with comprehensive accessory information
-  const AccessoryDetailsDropdown = ({ accessoryQuantities, movementType }) => {
+  const AccessoryDetailsDropdown = useCallback(({ accessoryQuantities, movementType }) => {
     const [isOpen, setIsOpen] = useState(false);
 
     if (!accessoryQuantities) {
@@ -702,9 +744,9 @@ const ItemMovementsPage = () => {
         )}
       </div>
     );
-  };
+  }, []);
 
-  const DetailItem = ({ icon, label, value, valueColor = 'text-gray-100 dark:text-gray-100 light:text-gray-900', isImportant = false }) => (
+  const DetailItem = useCallback(({ icon, label, value, valueColor = 'text-gray-100 dark:text-gray-100 light:text-gray-900', isImportant = false }) => (
     <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-gray-800 to-gray-900 rounded-xl shadow border border-gray-700 hover:border-blue-400 transition-all duration-200 dark:from-gray-800 dark:to-gray-900 dark:border-gray-700 dark:hover:border-blue-400 light:from-white/80 light:to-gray-100 light:border-gray-200 light:hover:border-blue-300">
       <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 text-white shadow dark:from-blue-500 dark:to-purple-600 light:from-blue-400 light:to-purple-500">
         <span className="text-lg">{icon}</span>
@@ -716,9 +758,9 @@ const ItemMovementsPage = () => {
         </p>
       </div>
     </div>
-  );
+  ), []);
 
-  const StatCard = ({ stat, index }) => (
+  const StatCard = useCallback(({ stat, index }) => (
     <div
       className={`relative overflow-hidden rounded-xl shadow hover:shadow-md transform hover:-translate-y-1 transition-all duration-300 group bg-gradient-to-r ${getMovementTypeColor(stat.movementType)}`}
     >
@@ -753,16 +795,16 @@ const ItemMovementsPage = () => {
         </div>
       </div>
     </div>
-  );
+  ), [getMovementTypeColor, getMovementIcon]);
 
-  const mobileColumns = [
+  const mobileColumns = useMemo(() => [
     { label: 'الصنف', field: 'itemName', width: '40%' },
     { label: 'نوع الحركة', field: 'movementType', width: '30%' },
     { label: 'الكمية', field: 'quantities', width: '20%' },
     { label: 'الإجراءات', field: null, width: '10%' },
-  ];
+  ], []);
 
-  const desktopColumns = [
+  const desktopColumns = useMemo(() => [
     { label: 'المعرف', field: 'id', width: '70px' },
     { label: 'الصنف', field: 'itemName', width: '150px' },
     { label: 'الكود', field: 'code', width: '100px' },
@@ -774,10 +816,9 @@ const ItemMovementsPage = () => {
     { label: 'التاريخ', field: 'date', width: '110px' },
     { label: 'المستخدم', field: 'user', width: '100px' },
     { label: 'الإجراءات', field: null, width: '80px' },
-  ];
+  ], []);
 
-  // Enhanced MobileMovementCard to include factory dispatch
-  const MobileMovementCard = ({ movement }) => (
+  const MobileMovementCard = useCallback(({ movement }) => (
     <div className="bg-gray-800/50 dark:bg-gray-800/50 light:bg-white/80 rounded-xl p-3 mb-2 border border-gray-700 hover:border-blue-500 transition-all duration-200 dark:border-gray-700 dark:hover:border-blue-500 light:border-gray-200 light:hover:border-blue-300">
       <div className="grid grid-cols-2 gap-2 mb-2">
         <div className="col-span-2">
@@ -833,10 +874,9 @@ const ItemMovementsPage = () => {
         </button>
       </div>
     </div>
-  );
+  ), [getMovementTypeColor, getMovementIcon, AccessoryDetailsDropdown, FactoryDispatchDropdown, handleViewDetails]);
 
-  // Enhanced DesktopMovementRow to include factory dispatch
-  const DesktopMovementRow = ({ movement, index }) => (
+  const DesktopMovementRow = useCallback(({ movement, index }) => (
     <tr
       key={movement.id}
       className={`hover:bg-blue-900/20 transition-all duration-200 group ${index % 2 === 0 ? 'bg-gray-800/50 dark:bg-gray-800/50 light:bg-gray-50/50' : 'bg-gray-900/50 dark:bg-gray-900/50 light:bg-white/50'}`}
@@ -921,13 +961,18 @@ const ItemMovementsPage = () => {
         </button>
       </td>
     </tr>
-  );
+  ), [getMovementTypeColor, getMovementIcon, AccessoryDetailsDropdown, FactoryDispatchDropdown, handleViewDetails, formatDisplayDate]);
 
-  const handleThemeToggle = () => {
+  const handleThemeToggle = useCallback(() => {
     const newMode = mode === 'dark' ? 'light' : 'dark';
     setMode(newMode);
     localStorage.setItem('themeMode', newMode);
-  };
+  }, [mode]);
+
+  // Virtual scrolling for large datasets
+  const visibleMovements = useMemo(() => {
+    return movements.slice(0, 100); // Limit visible items for performance
+  }, [movements]);
 
   return (
     <div className={`min-h-screen bg-gradient-to-br from-gray-900 to-blue-900 p-2 md:p-4 font-tajawal text-gray-100 flex flex-col dark:from-gray-900 dark:to-blue-900 light:from-gray-100 light:to-blue-100 light:text-gray-900`} dir="rtl">
@@ -988,7 +1033,7 @@ const ItemMovementsPage = () => {
             <div className="flex gap-2 flex-wrap justify-center items-center">
               <button
                 onClick={handleExport}
-                disabled={loading}
+                disabled={loading || movements.length === 0}
                 className="bg-white/20 backdrop-blur text-white font-black rounded-xl px-3 py-2 flex items-center gap-2 hover:bg-white/30 disabled:bg-white/10 disabled:text-white/50 transition-all duration-200 text-sm border border-white/30 dark:bg-white/20 dark:text-white light:bg-black/10 light:text-gray-900 light:border-black/20 light:hover:bg-black/20"
               >
                 <span className="text-sm">↓</span>
@@ -1024,14 +1069,14 @@ const ItemMovementsPage = () => {
         </div>
       </div>
 
-      {/* Stats Cards - Made thinner */}
+      {/* Stats Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
         {stats.slice(0, isMobile ? 2 : 4).map((stat, index) => (
           <StatCard key={`${stat.movementType}-${index}`} stat={stat} index={index} />
         ))}
       </div>
 
-      {/* Search and Filters - Compact */}
+      {/* Search and Filters */}
       <div className="mb-4 bg-gray-800/80 backdrop-blur rounded-2xl shadow border border-gray-700/50 dark:bg-gray-800/80 light:bg-white/80 light:border-gray-200/50">
         <div className="p-3">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-center">
@@ -1087,7 +1132,7 @@ const ItemMovementsPage = () => {
         </div>
       )}
 
-      {/* Main Content - Maximized Table */}
+      {/* Main Content */}
       {isMobile ? (
         <div className="flex-1 bg-gray-800/80 backdrop-blur rounded-2xl shadow border border-gray-700/50 overflow-hidden dark:bg-gray-800/80 light:bg-white/80 light:border-gray-200/50">
           <div className="p-3 bg-gradient-to-r from-blue-600 to-purple-600 dark:from-blue-600 dark:to-purple-600 light:from-blue-400 light:to-purple-400">
@@ -1102,7 +1147,7 @@ const ItemMovementsPage = () => {
                   <div key={i} className="animate-pulse bg-gray-700/50 rounded-xl h-32"></div>
                 ))}
               </div>
-            ) : movements.length === 0 ? (
+            ) : visibleMovements.length === 0 ? (
               <div className="text-center py-8">
                 <div className="text-gray-400 dark:text-gray-400 light:text-gray-500">
                   <h3 className="text-lg font-black mb-2 font-tajawal">لا توجد بيانات</h3>
@@ -1110,13 +1155,13 @@ const ItemMovementsPage = () => {
                 </div>
               </div>
             ) : (
-              movements.map((movement) => (
+              visibleMovements.map((movement) => (
                 <MobileMovementCard key={movement.id} movement={movement} />
               ))
             )}
           </div>
           
-          {/* Compact Pagination */}
+          {/* Pagination */}
           <div className="p-2 border-t border-gray-700 bg-gray-800/50 backdrop-blur dark:border-gray-700 light:border-gray-200">
             <div className="flex flex-col items-center gap-2">
               <div className="flex items-center gap-2">
@@ -1180,7 +1225,7 @@ const ItemMovementsPage = () => {
               </thead>
               <tbody>
                 {loading ? (
-                  [...Array(rowsPerPage)].map((_, i) => (
+                  [...Array(Math.min(rowsPerPage, 10))].map((_, i) => (
                     <tr key={i}>
                       {desktopColumns.map((_, j) => (
                         <td key={j} className="p-2">
@@ -1189,7 +1234,7 @@ const ItemMovementsPage = () => {
                       ))}
                     </tr>
                   ))
-                ) : movements.length === 0 ? (
+                ) : visibleMovements.length === 0 ? (
                   <tr>
                     <td colSpan={desktopColumns.length} className="py-8 text-center">
                       <div className="text-gray-400 dark:text-gray-400 light:text-gray-500">
@@ -1199,7 +1244,7 @@ const ItemMovementsPage = () => {
                     </td>
                   </tr>
                 ) : (
-                  movements.map((movement, index) => (
+                  visibleMovements.map((movement, index) => (
                     <DesktopMovementRow key={movement.id} movement={movement} index={index} />
                   ))
                 )}
@@ -1207,7 +1252,7 @@ const ItemMovementsPage = () => {
             </table>
           </div>
           
-          {/* Compact Pagination */}
+          {/* Pagination */}
           <div className="p-3 border-t border-gray-700 bg-gray-800/50 backdrop-blur dark:border-gray-700 light:border-gray-200">
             <div className="flex flex-col md:flex-row justify-between items-center gap-3">
               <div className="flex items-center gap-2">
@@ -1246,10 +1291,10 @@ const ItemMovementsPage = () => {
         </div>
       )}
 
-      {/* Filter Dialog - Compact with Shadow */}
+      {/* Filter Dialog */}
       {filterDialogOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2">
-          <div className="w-full max-w-md bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl shadow-2xl p-4 dark:from-gray-800 dark:to-gray-900 light:from-white light:to-gray-100">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2" onClick={() => setFilterDialogOpen(false)}>
+          <div className="w-full max-w-md bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl shadow-2xl p-4 dark:from-gray-800 dark:to-gray-900 light:from-white light:to-gray-100" onClick={(e) => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-3 rounded-t-xl dark:from-blue-600 dark:to-purple-600 light:from-blue-400 light:to-purple-400">
               <div className="flex items-center gap-2">
                 <span className="text-lg text-white">🛠️</span>
@@ -1346,7 +1391,7 @@ const ItemMovementsPage = () => {
               <button
                 onClick={() => {
                   setFilterDialogOpen(false);
-                  fetchMovements(page, rowsPerPage, sortConfig, filters);
+                  fetchMovements(0, rowsPerPage, sortConfig, filters, true);
                 }}
                 className="flex-1 rounded-lg px-3 py-2 text-sm font-bold bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 shadow dark:from-blue-500 dark:to-purple-500 light:from-blue-400 light:to-purple-400"
               >
@@ -1357,10 +1402,10 @@ const ItemMovementsPage = () => {
         </div>
       )}
 
-      {/* Enhanced Details Dialog with Accessory and Factory Information */}
+      {/* Details Dialog */}
       {detailDialogOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2">
-          <div className="w-full max-w-2xl max-h-[90vh] bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl shadow-2xl overflow-hidden dark:from-gray-800 dark:to-gray-900 light:from-white light:to-gray-100">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2" onClick={() => setDetailDialogOpen(false)}>
+          <div className="w-full max-w-2xl max-h-[90vh] bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl shadow-2xl overflow-hidden dark:from-gray-800 dark:to-gray-900 light:from-white light:to-gray-100" onClick={(e) => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-3 dark:from-blue-600 dark:to-purple-600 light:from-blue-400 light:to-purple-400">
               <div className="flex items-center justify-center gap-2">
                 <span className="text-lg text-white">📦</span>
@@ -1533,4 +1578,3 @@ const ItemMovementsPage = () => {
 };
 
 export default ItemMovementsPage;
-
