@@ -18,7 +18,18 @@ const ROLES = {
   MANAGER: "manager", 
   WORKER: "worker",
   BUYER: "buyer",
-  SUPPLIER: "supplier"
+  SUPPLIER: "supplier",
+  USER: "user"
+} as const;
+
+// === Permission constants ===
+const PERMISSIONS = {
+  VIEW: 'view',
+  CREATE: 'create', 
+  UPDATE: 'update',
+  DELETE: 'delete',
+  MANAGE: 'manage',
+  ADMIN: 'admin'
 } as const;
 
 // === Lazy-loaded Pages ===
@@ -104,11 +115,48 @@ const SupplierManagementPage = lazy(() => import("./features/roles/buyer/pages/S
 const ProcurementPage = lazy(() => import("./features/roles/buyer/pages/ProcurementPage"));
 const BudgetManagementPage = lazy(() => import("./features/roles/buyer/pages/BudgetManagementPage"));
 
+// USER ROLE COMPONENTS
+const UserDashboard = lazy(() => import("./features/roles/user/pages/DashboardPage"));
+const UserInventoryView = lazy(() => import("./features/roles/user/pages/InventoryViewPage"));
+const UserReportsView = lazy(() => import("./features/roles/user/pages/ReportsViewPage"));
+const UserItemMovementsView = lazy(() => import("./features/roles/user/pages/ItemMovementsViewPage"));
+const UserSettings = lazy(() => import("./features/roles/user/pages/SettingPage"));
+const UserSearchPage = lazy(() => import("./features/roles/user/pages/SearchPage"));
+
 // Profile & Settings
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const SecuritySettingsPage = lazy(() => import("./pages/SecuritySettingsPage"));
 const NotificationSettingsPage = lazy(() => import("./pages/NotificationSettingsPage"));
 const ChangePasswordPage = lazy(() => import("./pages/ChangePasswordPage"));
+
+// === Enhanced RequireRole with Permissions ===
+interface RequirePermissionProps {
+  children: React.ReactNode;
+  permission?: string;
+  allowedRoles?: string[];
+}
+
+const RequirePermission: React.FC<RequirePermissionProps> = ({ 
+  children, 
+  permission, 
+  allowedRoles = [] 
+}) => {
+  const { user } = useAuth();
+  
+  // Superadmin always has all permissions
+  if (user?.role === ROLES.SUPER_ADMIN) {
+    return <>{children}</>;
+  }
+  
+  // Check if user has the required role
+  const hasRole = allowedRoles.length === 0 || allowedRoles.includes(user?.role || '');
+  
+  if (!hasRole) {
+    return <Navigate to="/unauthorized" replace />;
+  }
+  
+  return <>{children}</>;
+};
 
 // === Page Transition Wrapper ===
 const PageTransitionWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -137,7 +185,8 @@ const ROLE_REDIRECT_PATHS = {
   [ROLES.MANAGER]: "/manager/dashboard",
   [ROLES.WORKER]: "/worker/dashboard",
   [ROLES.BUYER]: "/buyer/dashboard",
-  [ROLES.SUPPLIER]: "/supplier/dashboard"
+  [ROLES.SUPPLIER]: "/supplier/dashboard",
+  [ROLES.USER]: "/user/dashboard"
 } as const;
 
 // === Simplified Protected Route Component ===
@@ -168,6 +217,18 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }
   
   return <>{children}</>;
+};
+
+// === SuperAdmin Access Wrapper ===
+const SuperAdminAccess: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
+  
+  // Superadmin can access everything
+  if (user?.role === ROLES.SUPER_ADMIN) {
+    return <>{children}</>;
+  }
+  
+  return <Navigate to="/unauthorized" replace />;
 };
 
 // === Main App Component ===
@@ -287,9 +348,9 @@ const App: React.FC = () => {
 
                     {/* ================= MANAGER ROUTES (SUPER_ADMIN + MANAGER) ================= */}
                     <Route path="/manager" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER]}>
                         <Outlet />
-                      </RequireRole>
+                      </RequirePermission>
                     }>
                       <Route index element={<Navigate to="dashboard" replace />} />
                       <Route path="dashboard" element={<PageTransitionWrapper><ManagerDashboard /></PageTransitionWrapper>} />
@@ -329,9 +390,9 @@ const App: React.FC = () => {
 
                     {/* ================= SUPPLIER ROUTES (SUPER_ADMIN + SUPPLIER) ================= */}
                     <Route path="/supplier" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.SUPPLIER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.SUPPLIER]}>
                         <Outlet />
-                      </RequireRole>
+                      </RequirePermission>
                     }>
                       <Route index element={<Navigate to="dashboard" replace />} />
                       <Route path="dashboard" element={<PageTransitionWrapper><SupplierDashboard /></PageTransitionWrapper>} />
@@ -345,9 +406,9 @@ const App: React.FC = () => {
 
                     {/* ================= WORKER ROUTES (SUPER_ADMIN + WORKER) ================= */}
                     <Route path="/worker" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.WORKER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.WORKER]}>
                         <Outlet />
-                      </RequireRole>
+                      </RequirePermission>
                     }>
                       <Route index element={<Navigate to="dashboard" replace />} />
                       <Route path="dashboard" element={<PageTransitionWrapper><WorkerDashboard /></PageTransitionWrapper>} />
@@ -363,9 +424,9 @@ const App: React.FC = () => {
 
                     {/* ================= BUYER ROUTES (SUPER_ADMIN + BUYER) ================= */}
                     <Route path="/buyer" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.BUYER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.BUYER]}>
                         <Outlet />
-                      </RequireRole>
+                      </RequirePermission>
                     }>
                       <Route index element={<Navigate to="dashboard" replace />} />
                       <Route path="dashboard" element={<PageTransitionWrapper><BuyerDashboard /></PageTransitionWrapper>} />
@@ -379,15 +440,27 @@ const App: React.FC = () => {
                       <Route path="budget-management" element={<PageTransitionWrapper><BudgetManagementPage /></PageTransitionWrapper>} />
                     </Route>
 
-                    {/* ================= UNIVERSAL SUPER_ADMIN ACCESS TO ALL ROUTES ================= */}
-                    {/* SUPER_ADMIN can access ANY manager route directly */}
-                    <Route path="/manager/*" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN]}>
+                    {/* ================= USER ROUTES (SUPER_ADMIN + USER) ================= */}
+                    <Route path="/user" element={
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.USER]}>
                         <Outlet />
-                      </RequireRole>
+                      </RequirePermission>
                     }>
+                      <Route index element={<Navigate to="dashboard" replace />} />
+                      <Route path="dashboard" element={<PageTransitionWrapper><UserDashboard /></PageTransitionWrapper>} />
+                      <Route path="inventory" element={<PageTransitionWrapper><UserInventoryView /></PageTransitionWrapper>} />
+                      <Route path="reports" element={<PageTransitionWrapper><UserReportsView /></PageTransitionWrapper>} />
+                      <Route path="item-movements" element={<PageTransitionWrapper><UserItemMovementsView /></PageTransitionWrapper>} />
+                      <Route path="search" element={<PageTransitionWrapper><UserSearchPage /></PageTransitionWrapper>} />
+                      <Route path="settings" element={<PageTransitionWrapper><UserSettings /></PageTransitionWrapper>} />
+                    </Route>
+
+                    {/* ================= UNIVERSAL SUPER_ADMIN ACCESS TO ALL ROUTES ================= */}
+                    {/* SUPER_ADMIN can access ANY route directly through these catch-alls */}
+                    <Route path="/manager/*" element={<SuperAdminAccess><Outlet /></SuperAdminAccess>}>
                       <Route path="*" element={
                         <Routes>
+                          {/* All manager routes accessible to superadmin */}
                           <Route path="dashboard" element={<PageTransitionWrapper><ManagerDashboard /></PageTransitionWrapper>} />
                           <Route path="users" element={<PageTransitionWrapper><UsersPage /></PageTransitionWrapper>} />
                           <Route path="inventory" element={<PageTransitionWrapper><InventoryPage /></PageTransitionWrapper>} />
@@ -397,21 +470,23 @@ const App: React.FC = () => {
                           <Route path="settings" element={<PageTransitionWrapper><ManagerSettings /></PageTransitionWrapper>} />
                           
                           {/* Main Inventory Operations */}
-                          <Route path="main-inventory/add-item" element={<PageTransitionWrapper><AddItemPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/dispatch/dispatch-factory" element={<PageTransitionWrapper><DispatchFactoryPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/dispatch/dispatch-external" element={<PageTransitionWrapper><DispatchExternalPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/search-edit" element={<PageTransitionWrapper><SearchEditPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/view-stock" element={<PageTransitionWrapper><ViewStockPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/invoices" element={<PageTransitionWrapper><InvoiceSystemPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/item-movements" element={<PageTransitionWrapper><ItemMovementsPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/stock-adjustment" element={<PageTransitionWrapper><StockAdjustmentPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/batch-operations" element={<PageTransitionWrapper><BatchOperationsPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/location-transfers" element={<PageTransitionWrapper><LocationTransfersPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/delete-from-stock" element={<PageTransitionWrapper><DeleteFromStockPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/delete-from-factory" element={<PageTransitionWrapper><DeleteFromFactoryPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/delete-from-external" element={<PageTransitionWrapper><DeleteFromExternalPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/transfer-to-print" element={<PageTransitionWrapper><TransferToPrintPage /></PageTransitionWrapper>} />
-                          <Route path="main-inventory/factory-return" element={<PageTransitionWrapper><FactoryReturnPage /></PageTransitionWrapper>} />
+                          <Route path="main-inventory/*" element={<Outlet />}>
+                            <Route path="add-item" element={<PageTransitionWrapper><AddItemPage /></PageTransitionWrapper>} />
+                            <Route path="dispatch/dispatch-factory" element={<PageTransitionWrapper><DispatchFactoryPage /></PageTransitionWrapper>} />
+                            <Route path="dispatch/dispatch-external" element={<PageTransitionWrapper><DispatchExternalPage /></PageTransitionWrapper>} />
+                            <Route path="search-edit" element={<PageTransitionWrapper><SearchEditPage /></PageTransitionWrapper>} />
+                            <Route path="view-stock" element={<PageTransitionWrapper><ViewStockPage /></PageTransitionWrapper>} />
+                            <Route path="invoices" element={<PageTransitionWrapper><InvoiceSystemPage /></PageTransitionWrapper>} />
+                            <Route path="item-movements" element={<PageTransitionWrapper><ItemMovementsPage /></PageTransitionWrapper>} />
+                            <Route path="stock-adjustment" element={<PageTransitionWrapper><StockAdjustmentPage /></PageTransitionWrapper>} />
+                            <Route path="batch-operations" element={<PageTransitionWrapper><BatchOperationsPage /></PageTransitionWrapper>} />
+                            <Route path="location-transfers" element={<PageTransitionWrapper><LocationTransfersPage /></PageTransitionWrapper>} />
+                            <Route path="delete-from-stock" element={<PageTransitionWrapper><DeleteFromStockPage /></PageTransitionWrapper>} />
+                            <Route path="delete-from-factory" element={<PageTransitionWrapper><DeleteFromFactoryPage /></PageTransitionWrapper>} />
+                            <Route path="delete-from-external" element={<PageTransitionWrapper><DeleteFromExternalPage /></PageTransitionWrapper>} />
+                            <Route path="transfer-to-print" element={<PageTransitionWrapper><TransferToPrintPage /></PageTransitionWrapper>} />
+                            <Route path="factory-return" element={<PageTransitionWrapper><FactoryReturnPage /></PageTransitionWrapper>} />
+                          </Route>
                           
                           {/* Accessories Management */}
                           <Route path="accessories" element={<PageTransitionWrapper><AccessoryManagementPage /></PageTransitionWrapper>} />
@@ -425,12 +500,7 @@ const App: React.FC = () => {
                       } />
                     </Route>
 
-                    {/* SUPER_ADMIN can access ANY supplier route directly */}
-                    <Route path="/supplier/*" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN]}>
-                        <Outlet />
-                      </RequireRole>
-                    }>
+                    <Route path="/supplier/*" element={<SuperAdminAccess><Outlet /></SuperAdminAccess>}>
                       <Route path="*" element={
                         <Routes>
                           <Route path="dashboard" element={<PageTransitionWrapper><SupplierDashboard /></PageTransitionWrapper>} />
@@ -444,12 +514,7 @@ const App: React.FC = () => {
                       } />
                     </Route>
 
-                    {/* SUPER_ADMIN can access ANY worker route directly */}
-                    <Route path="/worker/*" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN]}>
-                        <Outlet />
-                      </RequireRole>
-                    }>
+                    <Route path="/worker/*" element={<SuperAdminAccess><Outlet /></SuperAdminAccess>}>
                       <Route path="*" element={
                         <Routes>
                           <Route path="dashboard" element={<PageTransitionWrapper><WorkerDashboard /></PageTransitionWrapper>} />
@@ -465,12 +530,7 @@ const App: React.FC = () => {
                       } />
                     </Route>
 
-                    {/* SUPER_ADMIN can access ANY buyer route directly */}
-                    <Route path="/buyer/*" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN]}>
-                        <Outlet />
-                      </RequireRole>
-                    }>
+                    <Route path="/buyer/*" element={<SuperAdminAccess><Outlet /></SuperAdminAccess>}>
                       <Route path="*" element={
                         <Routes>
                           <Route path="dashboard" element={<PageTransitionWrapper><BuyerDashboard /></PageTransitionWrapper>} />
@@ -486,29 +546,42 @@ const App: React.FC = () => {
                       } />
                     </Route>
 
+                    <Route path="/user/*" element={<SuperAdminAccess><Outlet /></SuperAdminAccess>}>
+                      <Route path="*" element={
+                        <Routes>
+                          <Route path="dashboard" element={<PageTransitionWrapper><UserDashboard /></PageTransitionWrapper>} />
+                          <Route path="inventory" element={<PageTransitionWrapper><UserInventoryView /></PageTransitionWrapper>} />
+                          <Route path="reports" element={<PageTransitionWrapper><UserReportsView /></PageTransitionWrapper>} />
+                          <Route path="item-movements" element={<PageTransitionWrapper><UserItemMovementsView /></PageTransitionWrapper>} />
+                          <Route path="search" element={<PageTransitionWrapper><UserSearchPage /></PageTransitionWrapper>} />
+                          <Route path="settings" element={<PageTransitionWrapper><UserSettings /></PageTransitionWrapper>} />
+                        </Routes>
+                      } />
+                    </Route>
+
                     {/* ================= COMMON PROFILE ROUTES (ALL AUTHENTICATED USERS) ================= */}
                     <Route path="/profile" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER, ROLES.USER]}>
                         <PageTransitionWrapper><ProfilePage /></PageTransitionWrapper>
-                      </RequireRole>
+                      </RequirePermission>
                     } />
                     
                     <Route path="/security" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER, ROLES.USER]}>
                         <PageTransitionWrapper><SecuritySettingsPage /></PageTransitionWrapper>
-                      </RequireRole>
+                      </RequirePermission>
                     } />
                     
                     <Route path="/notifications" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER, ROLES.USER]}>
                         <PageTransitionWrapper><NotificationSettingsPage /></PageTransitionWrapper>
-                      </RequireRole>
+                      </RequirePermission>
                     } />
                     
                     <Route path="/change-password" element={
-                      <RequireRole allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER]}>
+                      <RequirePermission allowedRoles={[ROLES.SUPER_ADMIN, ROLES.MANAGER, ROLES.WORKER, ROLES.BUYER, ROLES.SUPPLIER, ROLES.USER]}>
                         <PageTransitionWrapper><ChangePasswordPage /></PageTransitionWrapper>
-                      </RequireRole>
+                      </RequirePermission>
                     } />
 
                     {/* Catch all protected route */}
@@ -530,4 +603,4 @@ const App: React.FC = () => {
   );
 };
 
-export default App; 
+export default App;
